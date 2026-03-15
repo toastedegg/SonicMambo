@@ -32,7 +32,7 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
   const meydaAnalyzerRef = useRef<{ start(): void; stop(): void } | null>(null);
   const rafIdRef = useRef<number>(0);
   const rmsRef = useRef<number>(0);
-  const bufferRef = useRef<Float32Array<ArrayBuffer> | null>(null);
+  const bufferRef = useRef<Float32Array | null>(null);
   const detectPitchRef = useRef<((buffer: Float32Array) => number | null) | null>(null);
 
   const stop = useCallback(() => {
