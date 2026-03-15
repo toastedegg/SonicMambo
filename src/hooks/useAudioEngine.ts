@@ -4,7 +4,6 @@ import * as Pitchfinder from 'pitchfinder';
 import {
   type AudioEngineConfig,
   type AudioEngineState,
-  type DetectedNote,
   DEFAULT_AUDIO_CONFIG,
 } from '../types/audio';
 import { frequencyToNoteString, frequencyToNote } from '../utils/noteFromFrequency';

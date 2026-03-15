@@ -6,7 +6,20 @@
 const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'] as const;
 
 const A4_FREQ = 440;
-const A4_MIDI = 69;
+const NOTE_TO_SEMITONE: Record<string, number> = {
+  C: 0,
+  'C#': 1,
+  D: 2,
+  'D#': 3,
+  E: 4,
+  F: 5,
+  'F#': 6,
+  G: 7,
+  'G#': 8,
+  A: 9,
+  'A#': 10,
+  B: 11,
+};
 
 /**
  * Convert frequency (Hz) to MIDI note number (e.g. 69 for A4).
@@ -14,6 +27,20 @@ const A4_MIDI = 69;
 export function frequencyToMidi(freq: number): number {
   if (freq <= 0 || !Number.isFinite(freq)) return NaN;
   return 69 + 12 * Math.log2(freq / A4_FREQ);
+}
+
+/**
+ * Convert note label (e.g. "E2", "F#3") to MIDI note number.
+ */
+export function noteLabelToMidi(noteLabel: string): number | null {
+  const match = /^([A-G])(#?)(-?\d)$/.exec(noteLabel.trim());
+  if (!match) return null;
+  const [, root, accidental, octaveString] = match;
+  const key = `${root}${accidental}`;
+  const semitone = NOTE_TO_SEMITONE[key];
+  if (semitone == null) return null;
+  const octave = Number(octaveString);
+  return semitone + (octave + 1) * 12;
 }
 
 /**
