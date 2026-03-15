@@ -4,6 +4,9 @@ import { LESSONS } from './data/lessons';
 import { useAudioEngine } from './hooks/useAudioEngine';
 import type { Lesson, LessonTimelineNote } from './types/lesson';
 
+const TOLERANCE_MS = 100;
+const HIT_RATIO = 0.6;
+
 function App() {
   const { isListening, currentNote, frequency, loudness, error, start, stop } = useAudioEngine();
   const [selectedLesson, setSelectedLesson] = useState<Lesson>(LESSONS[0]);
@@ -58,8 +61,6 @@ function App() {
   useEffect(() => {
     if (!isLessonRunning || lessonStartedAt == null) return undefined;
 
-    const HIT_RATIO = 0.6;
-    const TOLERANCE_MS = 100;
     let rafId = 0;
     const accumulators = noteAccumulatorRef.current;
 
@@ -116,6 +117,15 @@ function App() {
   const activeTargetNote = useMemo(() => {
     if (!isLessonRunning) return null;
     return lessonNotes.find((note) => lessonElapsedMs >= note.startMs && lessonElapsedMs <= note.startMs + note.durationMs) ?? null;
+  }, [isLessonRunning, lessonElapsedMs, lessonNotes]);
+
+  const scoringTargetNote = useMemo(() => {
+    if (!isLessonRunning) return null;
+    return lessonNotes.find((note) =>
+      note.status === 'pending'
+      && lessonElapsedMs >= note.startMs - TOLERANCE_MS
+      && lessonElapsedMs <= note.startMs + note.durationMs + TOLERANCE_MS
+    ) ?? null;
   }, [isLessonRunning, lessonElapsedMs, lessonNotes]);
 
   const stats = useMemo(() => {
@@ -199,7 +209,7 @@ function App() {
           <div
             className={`min-h-[4.5rem] flex flex-col items-center justify-center rounded-xl transition-colors ${
               currentNote?.label
-                ? activeTargetNote && currentNote.label === activeTargetNote.label
+                ? scoringTargetNote && currentNote.label === scoringTargetNote.label
                   ? 'bg-brand-green/15'
                   : 'bg-brand-red/10'
                 : 'bg-gray-100'
