@@ -111,7 +111,7 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
           return;
         }
 
-        analyserNode.getFloatTimeDomainData(buf);
+        (analyserNode as { getFloatTimeDomainData: (array: Float32Array) => void }).getFloatTimeDomainData(buf);
         const rms = rmsRef.current;
 
         setState((prev) => ({ ...prev, loudness: rms }));
