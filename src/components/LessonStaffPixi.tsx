@@ -204,7 +204,7 @@ export function LessonStaffPixi({
   }, [currentTimeMs, detectedNoteLabel, durationMs, height, notes, width]);
 
   return (
-    <div className="w-full overflow-hidden rounded-lg bg-sp-base border border-white/5">
+    <div className="w-full overflow-hidden sp-card">
       <div ref={hostRef} />
     </div>
   );

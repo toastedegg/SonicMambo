@@ -152,33 +152,23 @@ export function Lesson({ lesson, onAudioUpdate }: LessonProps) {
 
   return (
     <div className="flex flex-col gap-4 p-6 max-w-4xl mx-auto">
-      <section className="rounded-lg bg-sp-base p-5">
+      <section className="sp-card-padded">
         {!isLessonRunning ? (
-          <button
-            type="button"
-            onClick={startLesson}
-            className="w-full py-4 px-6 rounded-full bg-sp-green hover:bg-sp-green-dark active:scale-[0.98] text-black font-bold text-lg shadow-lg shadow-sp-green/20 transition-all"
-          >
+          <button type="button" onClick={startLesson} className="sp-btn-primary">
             Start Lesson
           </button>
         ) : (
           <div className="flex items-center justify-between gap-3">
             <p className="text-sm text-sp-text-sub font-semibold">Lesson in progress...</p>
-            <button
-              type="button"
-              onClick={stopLesson}
-              className="py-2 px-5 rounded-full bg-sp-elevated hover:bg-sp-highlight text-white font-semibold text-sm transition-colors border border-sp-text-muted/30"
-            >
+            <button type="button" onClick={stopLesson} className="sp-btn-secondary">
               Stop
             </button>
           </div>
         )}
       </section>
 
-      <section className="rounded-lg bg-sp-base p-5 text-center">
-        <p className="text-xs font-bold uppercase tracking-widest text-sp-text-muted mb-2">
-          Target note
-        </p>
+      <section className="sp-card-padded text-center">
+        <p className="sp-section-label mb-2">Target note</p>
         <p className="text-4xl font-extrabold text-white">
           {activeTargetNote ? activeTargetNote.label : 'Press Start'}
         </p>

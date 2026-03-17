@@ -16,7 +16,7 @@ interface BottomBarProps {
 export function BottomBar({ audio }: BottomBarProps) {
   if (!audio) {
     return (
-      <footer className="h-20 shrink-0 bg-sp-black border-t border-sp-elevated flex items-center justify-center z-20">
+      <footer className="sp-bottombar flex items-center justify-center">
         <p className="text-sp-text-muted text-sm font-semibold">
           Select a lesson to begin
         </p>
@@ -26,8 +26,15 @@ export function BottomBar({ audio }: BottomBarProps) {
 
   const { detectedLabel, frequency, loudness, targetLabel, isMatch, hits, misses } = audio;
 
+  const pillClass =
+    isMatch === true
+      ? 'sp-pill-match'
+      : isMatch === false
+        ? 'sp-pill-miss'
+        : 'sp-pill-neutral';
+
   return (
-    <footer className="h-20 shrink-0 bg-sp-black border-t border-sp-elevated grid grid-cols-3 items-center px-6 z-20">
+    <footer className="sp-bottombar grid grid-cols-3 items-center px-6">
       <div className="flex flex-col items-start min-w-0">
         {detectedLabel ? (
           <>
@@ -43,17 +50,7 @@ export function BottomBar({ audio }: BottomBarProps) {
 
       <div className="flex flex-col items-center">
         {targetLabel ? (
-          <div
-            className={`px-5 py-1.5 rounded-full text-sm font-bold transition-colors ${
-              isMatch === true
-                ? 'bg-brand-green/20 text-brand-green'
-                : isMatch === false
-                  ? 'bg-brand-red/20 text-brand-red'
-                  : 'bg-sp-elevated text-sp-text-sub'
-            }`}
-          >
-            Target: {targetLabel}
-          </div>
+          <div className={pillClass}>Target: {targetLabel}</div>
         ) : (
           <span className="text-sm text-sp-text-muted">Waiting...</span>
         )}
@@ -67,9 +64,9 @@ export function BottomBar({ audio }: BottomBarProps) {
           Miss <span className="text-brand-red">{misses}</span>
         </span>
         <div className="flex items-center gap-1.5">
-          <div className="w-16 h-1.5 rounded-full bg-sp-elevated overflow-hidden">
+          <div className="sp-loudness-track">
             <div
-              className="h-full rounded-full bg-sp-green transition-all duration-100"
+              className="sp-loudness-fill"
               style={{ width: `${Math.min(loudness * 100, 100)}%` }}
             />
           </div>

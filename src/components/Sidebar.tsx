@@ -8,11 +8,9 @@ interface SidebarProps {
 
 export function Sidebar({ lessons, activeLessonId, onSelectLesson }: SidebarProps) {
   return (
-    <aside className="w-72 shrink-0 flex flex-col bg-sp-base rounded-lg m-2 mr-0 overflow-hidden">
+    <aside className="sp-sidebar">
       <div className="px-5 pt-5 pb-3">
-        <h2 className="text-xs font-bold uppercase tracking-widest text-sp-text-muted">
-          Your Lessons
-        </h2>
+        <h2 className="sp-section-label">Your Lessons</h2>
       </div>
 
       <nav className="flex-1 overflow-y-auto px-2 pb-2">
@@ -24,11 +22,7 @@ export function Sidebar({ lessons, activeLessonId, onSelectLesson }: SidebarProp
                 <button
                   type="button"
                   onClick={() => onSelectLesson(lesson)}
-                  className={`w-full text-left px-3 py-2.5 rounded-md transition-colors flex items-center gap-3 group ${
-                    isActive
-                      ? 'bg-sp-highlight'
-                      : 'hover:bg-sp-elevated'
-                  }`}
+                  className={`sp-sidebar-item group ${isActive ? 'sp-sidebar-item-active' : 'sp-sidebar-item-idle'}`}
                 >
                   {isActive && (
                     <span className="w-1 h-8 rounded-full bg-sp-green shrink-0" />
