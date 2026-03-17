@@ -12,12 +12,12 @@ interface LessonStaffPixiProps {
 }
 
 const COLORS = {
-  staff: 0xd1d5db,
-  pending: 0x334155,
-  hit: 0x58cc02,
+  staff: 0x4a5568,
+  pending: 0xb3b3b3,
+  hit: 0x1db954,
   miss: 0xff4b4b,
-  bar: 0x1cb0f6,
-  text: 0x64748b,
+  bar: 0x1db954,
+  text: 0xb3b3b3,
   detected: 0xff9500,
 };
 
@@ -150,7 +150,7 @@ export function LessonStaffPixi({
       noteHead
         .ellipse(x, y, 10, 7)
         .fill({ color: noteColor, alpha: 0.95 })
-        .stroke({ width: 1.5, color: 0x0f172a, alpha: 0.25 });
+        .stroke({ width: 1.5, color: 0x000000, alpha: 0.4 });
       noteHead
         .moveTo(x + 10, y)
         .lineTo(x + 10, y - 26)
@@ -204,7 +204,7 @@ export function LessonStaffPixi({
   }, [currentTimeMs, detectedNoteLabel, durationMs, height, notes, width]);
 
   return (
-    <div className="w-full overflow-hidden rounded-2xl bg-white border border-brand-gray-dark/40 shadow-sm">
+    <div className="w-full overflow-hidden sp-card">
       <div ref={hostRef} />
     </div>
   );

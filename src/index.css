@@ -7,8 +7,147 @@ body {
   font-family: 'Nunito', system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  background-color: #121212;
+  color: #ffffff;
 }
 
 #root {
   min-height: 100vh;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #ffffff26;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #ffffff40;
+}
+
+/* ── Reusable component classes ── */
+@layer components {
+  /* Layout shells */
+  .sp-topbar {
+    @apply h-16 flex items-center justify-between px-6 bg-sp-black/90 backdrop-blur-md border-b border-white/5 shrink-0 z-20;
+  }
+
+  .sp-sidebar {
+    @apply w-72 shrink-0 flex flex-col bg-sp-base rounded-lg m-2 mr-0 overflow-hidden;
+  }
+
+  .sp-bottombar {
+    @apply h-20 shrink-0 bg-sp-black border-t border-sp-elevated z-20;
+  }
+
+  .sp-main-content {
+    @apply flex-1 overflow-y-auto p-2;
+  }
+
+  .sp-main-gradient {
+    @apply h-full rounded-lg bg-gradient-to-b from-sp-elevated/60 to-sp-black;
+  }
+
+  /* Cards & panels */
+  .sp-card {
+    @apply rounded-lg bg-sp-base border border-white/5;
+  }
+
+  .sp-card-padded {
+    @apply rounded-lg bg-sp-base p-5;
+  }
+
+  .sp-card-interactive {
+    @apply bg-sp-base hover:bg-sp-elevated rounded-lg text-left transition-all duration-200;
+  }
+
+  /* Buttons */
+  .sp-btn-primary {
+    @apply w-full py-4 px-6 rounded-full bg-sp-green hover:bg-sp-green-dark active:scale-[0.98] text-black font-bold text-lg shadow-lg shadow-sp-green/20 transition-all;
+  }
+
+  .sp-btn-secondary {
+    @apply py-2 px-5 rounded-full bg-sp-elevated hover:bg-sp-highlight text-white font-semibold text-sm transition-colors border border-sp-text-muted/30;
+  }
+
+  .sp-btn-ghost {
+    @apply flex items-center gap-1.5 text-sm font-semibold text-sp-text-sub hover:text-white transition-colors;
+  }
+
+  /* Sidebar items */
+  .sp-sidebar-item {
+    @apply w-full text-left px-3 py-2.5 rounded-md transition-colors flex items-center gap-3;
+  }
+
+  .sp-sidebar-item-active {
+    @apply bg-sp-highlight;
+  }
+
+  .sp-sidebar-item-idle {
+    @apply hover:bg-sp-elevated;
+  }
+
+  /* Typography */
+  .sp-section-label {
+    @apply text-xs font-bold uppercase tracking-widest text-sp-text-muted;
+  }
+
+  .sp-heading-lg {
+    @apply text-3xl font-extrabold text-white;
+  }
+
+  .sp-heading-md {
+    @apply text-xl font-bold text-white;
+  }
+
+  /* Feedback pills */
+  .sp-pill-match {
+    @apply px-5 py-1.5 rounded-full text-sm font-bold transition-colors bg-brand-green/20 text-brand-green;
+  }
+
+  .sp-pill-miss {
+    @apply px-5 py-1.5 rounded-full text-sm font-bold transition-colors bg-brand-red/20 text-brand-red;
+  }
+
+  .sp-pill-neutral {
+    @apply px-5 py-1.5 rounded-full text-sm font-bold transition-colors bg-sp-elevated text-sp-text-sub;
+  }
+
+  /* Mic indicator */
+  .sp-mic-dot {
+    @apply inline-block w-2 h-2 rounded-full;
+  }
+
+  .sp-mic-dot-on {
+    @apply bg-sp-green animate-pulse;
+  }
+
+  .sp-mic-dot-off {
+    @apply bg-sp-text-muted;
+  }
+
+  /* Loudness bar */
+  .sp-loudness-track {
+    @apply w-16 h-1.5 rounded-full bg-sp-elevated overflow-hidden;
+  }
+
+  .sp-loudness-fill {
+    @apply h-full rounded-full bg-sp-green transition-all duration-100;
+  }
+
+  /* Play button overlay (home cards) */
+  .sp-play-overlay {
+    @apply absolute right-4 bottom-4 opacity-0 group-hover:opacity-100 translate-y-1 group-hover:translate-y-0 transition-all duration-200;
+  }
+
+  .sp-play-circle {
+    @apply w-10 h-10 rounded-full bg-sp-green flex items-center justify-center shadow-lg shadow-black/40;
+  }
 }
