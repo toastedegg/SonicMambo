@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { LessonStaffPixi } from './LessonStaffPixi';
 import { useAudioEngine } from '../hooks/useAudioEngine';
+import type { AudioFeedback } from './BottomBar';
 import type { Lesson as LessonType, LessonTimelineNote } from '../types/lesson';
 
 const TOLERANCE_MS = 100;
@@ -8,10 +9,10 @@ const HIT_RATIO = 0.6;
 
 interface LessonProps {
   lesson: LessonType;
-  onBack: () => void;
+  onAudioUpdate: (feedback: AudioFeedback) => void;
 }
 
-export function Lesson({ lesson, onBack }: LessonProps) {
+export function Lesson({ lesson, onAudioUpdate }: LessonProps) {
   const { isListening, currentNote, frequency, loudness, error, start, stop } = useAudioEngine();
   const [isLessonRunning, setIsLessonRunning] = useState(false);
   const [lessonNotes, setLessonNotes] = useState<LessonTimelineNote[]>([]);
@@ -19,7 +20,6 @@ export function Lesson({ lesson, onBack }: LessonProps) {
   const [lessonStartedAt, setLessonStartedAt] = useState<number | null>(null);
   const detectedLabelRef = useRef<string | null>(null);
   const noteAccumulatorRef = useRef<Map<string, { matchFrames: number; totalFrames: number }>>(new Map());
-  const [lastDetectedNote, setLastDetectedNote] = useState<{ label: string; frequency: number } | null>(null);
 
   const beatMs = 60_000 / lesson.tempoBpm;
   const lessonDurationMs = useMemo(
@@ -33,10 +33,7 @@ export function Lesson({ lesson, onBack }: LessonProps) {
 
   useEffect(() => {
     detectedLabelRef.current = currentNote?.label ?? null;
-    if (currentNote?.label && frequency != null) {
-      setLastDetectedNote({ label: currentNote.label, frequency });
-    }
-  }, [currentNote?.label, frequency]);
+  }, [currentNote?.label]);
 
   const startLesson = async () => {
     await start();
@@ -57,15 +54,7 @@ export function Lesson({ lesson, onBack }: LessonProps) {
     setIsLessonRunning(false);
     setLessonStartedAt(null);
     setLessonElapsedMs(0);
-    setLastDetectedNote(null);
     stop();
-  };
-
-  const handleBack = () => {
-    if (isLessonRunning) {
-      stopLesson();
-    }
-    onBack();
   };
 
   useEffect(() => {
@@ -144,107 +133,67 @@ export function Lesson({ lesson, onBack }: LessonProps) {
     return { hits, misses };
   }, [lessonNotes]);
 
+  useEffect(() => {
+    const isMatch = scoringTargetNote && currentNote?.label
+      ? currentNote.label === scoringTargetNote.label
+      : null;
+
+    onAudioUpdate({
+      detectedLabel: currentNote?.label ?? null,
+      frequency: frequency ?? null,
+      loudness,
+      isListening,
+      targetLabel: activeTargetNote?.label ?? null,
+      isMatch,
+      hits: stats.hits,
+      misses: stats.misses,
+    });
+  }, [currentNote?.label, frequency, loudness, isListening, activeTargetNote, scoringTargetNote, stats, onAudioUpdate]);
+
   return (
-    <div className="min-h-screen bg-brand-gray font-display flex flex-col items-center p-6">
-      <header className="w-full max-w-4xl mt-6 mb-6">
-        <div className="flex items-center justify-between gap-4">
+    <div className="flex flex-col gap-4 p-6 max-w-4xl mx-auto">
+      <section className="rounded-lg bg-sp-base p-5">
+        {!isLessonRunning ? (
           <button
             type="button"
-            onClick={handleBack}
-            className="py-2 px-4 rounded-xl bg-white border border-brand-gray-dark/40 text-gray-700 font-semibold text-sm hover:bg-gray-50 transition-colors"
+            onClick={startLesson}
+            className="w-full py-4 px-6 rounded-full bg-sp-green hover:bg-sp-green-dark active:scale-[0.98] text-black font-bold text-lg shadow-lg shadow-sp-green/20 transition-all"
           >
-            Back to lessons
+            Start Lesson
           </button>
-          <div className="text-right">
-            <h1 className="text-2xl font-extrabold text-gray-800">{lesson.title}</h1>
-            <p className="text-gray-600 text-sm mt-1">Tempo: {lesson.tempoBpm} BPM</p>
+        ) : (
+          <div className="flex items-center justify-between gap-3">
+            <p className="text-sm text-sp-text-sub font-semibold">Lesson in progress...</p>
+            <button
+              type="button"
+              onClick={stopLesson}
+              className="py-2 px-5 rounded-full bg-sp-elevated hover:bg-sp-highlight text-white font-semibold text-sm transition-colors border border-sp-text-muted/30"
+            >
+              Stop
+            </button>
           </div>
-        </div>
-      </header>
-
-      <main className="w-full max-w-4xl flex flex-col items-center gap-6">
-        <section className="w-full rounded-2xl bg-white p-5 shadow-sm border border-brand-gray-dark/30">
-          {!isLessonRunning ? (
-            <div className="flex flex-col gap-4">
-              <button
-                type="button"
-                onClick={startLesson}
-                className="w-full py-4 px-6 rounded-2xl bg-brand-blue hover:bg-brand-blue-dark active:scale-[0.98] text-white font-bold text-lg shadow-md transition-all"
-              >
-                Start Lesson
-              </button>
-            </div>
-          ) : (
-            <div className="flex items-center justify-between gap-3">
-              <p className="text-sm text-gray-500 font-semibold">Lesson in progress</p>
-              <button
-                type="button"
-                onClick={stopLesson}
-                className="py-2 px-4 rounded-xl bg-brand-red hover:bg-brand-red-dark text-white font-semibold text-sm transition-colors"
-              >
-                Stop
-              </button>
-            </div>
-          )}
-        </section>
-
-        <section className="w-full rounded-2xl bg-white p-5 shadow-sm border border-brand-gray-dark/30">
-          <p className="text-sm font-semibold text-gray-500 uppercase tracking-wide text-center mb-2">
-            Target note
-          </p>
-          <p className="text-4xl font-extrabold text-gray-800 text-center">
-            {activeTargetNote ? `Play ${activeTargetNote.label}` : 'Press Start Lesson'}
-          </p>
-        </section>
-
-        <LessonStaffPixi
-          notes={lessonNotes}
-          currentTimeMs={lessonElapsedMs}
-          durationMs={lessonDurationMs}
-          detectedNoteLabel={currentNote?.label ?? null}
-        />
-
-        <section className="w-full rounded-2xl bg-white p-6 shadow-sm border border-brand-gray-dark/30">
-          <p className="text-sm font-semibold text-gray-500 uppercase tracking-wide text-center mb-2">
-            Detected note
-          </p>
-          <div
-            className={`min-h-[4.5rem] flex flex-col items-center justify-center rounded-xl transition-colors ${
-              currentNote?.label
-                ? scoringTargetNote && currentNote.label === scoringTargetNote.label
-                  ? 'bg-brand-green/15'
-                  : 'bg-brand-red/10'
-                : 'bg-gray-100'
-            }`}
-          >
-            {currentNote?.label ? (
-              <>
-                <p className="text-3xl font-extrabold text-gray-800">{currentNote.label}</p>
-                {frequency != null && (
-                  <p className="text-sm text-gray-500 mt-1">{frequency.toFixed(1)} Hz</p>
-                )}
-              </>
-            ) : lastDetectedNote ? (
-              <>
-                <p className="text-3xl font-extrabold text-gray-800">{lastDetectedNote.label}</p>
-                <p className="text-sm text-gray-500 mt-1">{lastDetectedNote.frequency.toFixed(1)} Hz</p>
-              </>
-            ) : (
-              <p className="text-gray-400 text-lg">Play a note...</p>
-            )}
-          </div>
-          <div className="mt-3 flex items-center justify-center gap-5 text-sm font-semibold text-gray-600">
-            <span>Hits: <span className="text-brand-green">{stats.hits}</span></span>
-            <span>Misses: <span className="text-brand-red">{stats.misses}</span></span>
-            <span>Loudness: {(loudness * 100).toFixed(1)}%</span>
-            <span>Mic: {isListening ? 'On' : 'Off'}</span>
-          </div>
-        </section>
-
-        {error && (
-          <p className="text-brand-red font-semibold text-center">{error}</p>
         )}
-      </main>
+      </section>
+
+      <section className="rounded-lg bg-sp-base p-5 text-center">
+        <p className="text-xs font-bold uppercase tracking-widest text-sp-text-muted mb-2">
+          Target note
+        </p>
+        <p className="text-4xl font-extrabold text-white">
+          {activeTargetNote ? activeTargetNote.label : 'Press Start'}
+        </p>
+      </section>
+
+      <LessonStaffPixi
+        notes={lessonNotes}
+        currentTimeMs={lessonElapsedMs}
+        durationMs={lessonDurationMs}
+        detectedNoteLabel={currentNote?.label ?? null}
+      />
+
+      {error && (
+        <p className="text-brand-red font-semibold text-center text-sm">{error}</p>
+      )}
     </div>
   );
 }
