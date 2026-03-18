@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import Meyda from 'meyda';
-import * as Pitchfinder from 'pitchfinder';
+
+// Import Essentia.js (Exact paths might vary slightly based on your bundler/Vite setup)
+// @ts-ignore - essentia.js doesn't ship with official TS types yet
+import { EssentiaWASM } from "essentia.js/dist/essentia-wasm.es.js";// @ts-ignore
+import Essentia from 'essentia.js/dist/essentia.js-core.es.js';
+
 import {
   type AudioEngineConfig,
   type AudioEngineState,
@@ -29,25 +33,28 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
   const audioContextRef = useRef<AudioContext | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
-  const meydaAnalyzerRef = useRef<{ start(): void; stop(): void } | null>(null);
   const rafIdRef = useRef<number>(0);
-  const rmsRef = useRef<number>(0);
   const bufferRef = useRef<Float32Array | null>(null);
-  const detectPitchRef = useRef<((buffer: Float32Array) => number | null) | null>(null);
+  
+  // Store the Essentia instance
+  const essentiaRef = useRef<any>(null);
 
   const stop = useCallback(() => {
     if (rafIdRef.current) {
       cancelAnimationFrame(rafIdRef.current);
       rafIdRef.current = 0;
     }
-    meydaAnalyzerRef.current?.stop();
-    meydaAnalyzerRef.current = null;
     streamRef.current?.getTracks().forEach((track) => track.stop());
     streamRef.current = null;
     analyserRef.current = null;
     audioContextRef.current?.close();
     audioContextRef.current = null;
-    rmsRef.current = 0;
+
+    // Optional: free memory used by the WASM module
+    if (essentiaRef.current) {
+      essentiaRef.current = null;
+    }
+
     setState({
       isListening: false,
       currentNote: null,
@@ -80,24 +87,9 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
       const buffer = new Float32Array(bufferLength);
       bufferRef.current = buffer;
 
-      const sampleRate = audioContext.sampleRate;
-      detectPitchRef.current = Pitchfinder.AMDF({
-        sampleRate,
-        minFrequency: config.minFrequency,
-        maxFrequency: config.maxFrequency,
-      });
-
-      const meydaAnalyzer = Meyda.createMeydaAnalyzer({
-        audioContext,
-        source: source as unknown as AudioNode,
-        bufferSize: config.bufferLength,
-        featureExtractors: ['rms'],
-        callback: (features: { rms?: number }) => {
-          rmsRef.current = typeof features?.rms === 'number' ? features.rms : 0;
-        },
-      });
-      meydaAnalyzer.start();
-      meydaAnalyzerRef.current = meydaAnalyzer;
+      // Initialize the Essentia WebAssembly instance
+      const essentia = new Essentia(EssentiaWASM);
+      essentiaRef.current = essentia;
 
       setState((s) => ({ ...s, isListening: true, error: null }));
 
@@ -105,20 +97,31 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
         const ctx = audioContextRef.current;
         const analyserNode = analyserRef.current;
         const buf = bufferRef.current;
-        const detectPitch = detectPitchRef.current;
+        const ess = essentiaRef.current;
 
-        if (!ctx || ctx.state === 'closed' || !analyserNode || !buf || !detectPitch) {
+        if (!ctx || ctx.state === 'closed' || !analyserNode || !buf || !ess) {
           return;
         }
 
-        (analyserNode as { getFloatTimeDomainData: (array: Float32Array) => void }).getFloatTimeDomainData(buf);
-        const rms = rmsRef.current;
+        analyserNode.getFloatTimeDomainData(buf as any);
+
+        // Convert the Float32Array into an Essentia internal C++ vector
+        const audioVector = ess.arrayToVector(buf);
+
+        // Calculate RMS loudness synchronously
+        const rms = ess.RMS(audioVector).rms;
 
         setState((prev) => ({ ...prev, loudness: rms }));
 
         if (rms > config.rmsThreshold) {
-          const frequency = detectPitch(buf);
-          if (frequency != null && Number.isFinite(frequency) && frequency > 0) {
+          // Detect pitch using Yin Probabilistic (ideal for guitar strings)
+          // Returns { pitch: number, pitchConfidence: number }
+          const pitchData = ess.PitchYinProbabilistic(audioVector, config.fftSize, Math.floor(config.fftSize / 2));
+          const frequency = pitchData.pitch;
+          const confidence = pitchData.pitchConfidence;
+
+          // Added confidence check (> 0.5) to reject false positives or harmonic noise
+          if (frequency != null && Number.isFinite(frequency) && frequency > 0 && confidence > 0.5) {
             const note = frequencyToNote(frequency);
             const label = frequencyToNoteString(frequency);
             setState((prev) => ({
