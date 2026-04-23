@@ -1,27 +1,44 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import Meyda from 'meyda';
-import * as Pitchfinder from 'pitchfinder';
+
+// @ts-ignore - essentia.js doesn't ship with official TS types yet
+import { EssentiaWASM } from "essentia.js/dist/essentia-wasm.es.js";
+// @ts-ignore
+import Essentia from 'essentia.js/dist/essentia.js-core.es.js';
+
 import {
   type AudioEngineConfig,
   type AudioEngineState,
   DEFAULT_AUDIO_CONFIG,
 } from '../types/audio';
 import { frequencyToNoteString, frequencyToNote } from '../utils/noteFromFrequency';
+import { AUDIO } from '../config/staff';
 
 export interface UseAudioEngineOptions {
   config?: Partial<AudioEngineConfig>;
 }
 
-export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngineState & {
+export interface UseAudioEngineReturn extends AudioEngineState {
+  /** Smoothed frequency in Hz (EMA). null when silent / low confidence. */
+  smoothedFrequency: number | null;
+  /** Mutable ref mirror of the latest detection, for high-frequency consumers. */
+  detectionRef: React.MutableRefObject<{
+    hz: number | null;
+    label: string | null;
+    confidence: number;
+    timestamp: number;
+  }>;
   start: () => Promise<void>;
   stop: () => void;
-} {
+}
+
+export function useAudioEngine(options: UseAudioEngineOptions = {}): UseAudioEngineReturn {
   const config: AudioEngineConfig = { ...DEFAULT_AUDIO_CONFIG, ...options.config };
 
-  const [state, setState] = useState<AudioEngineState>({
+  const [state, setState] = useState<AudioEngineState & { smoothedFrequency: number | null }>({
     isListening: false,
     currentNote: null,
     frequency: null,
+    smoothedFrequency: null,
     loudness: 0,
     error: null,
   });
@@ -29,29 +46,52 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
   const audioContextRef = useRef<AudioContext | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
-  const meydaAnalyzerRef = useRef<{ start(): void; stop(): void } | null>(null);
   const rafIdRef = useRef<number>(0);
-  const rmsRef = useRef<number>(0);
   const bufferRef = useRef<Float32Array | null>(null);
-  const detectPitchRef = useRef<((buffer: Float32Array) => number | null) | null>(null);
+  const essentiaRef = useRef<any>(null);
+
+  // Smoothing / hysteresis state (lives across ticks, not React renders).
+  const smoothedHzRef = useRef<number | null>(null);
+  const lastGoodAtRef = useRef<number>(0);
+  const candidateLabelRef = useRef<string | null>(null);
+  const candidateStreakRef = useRef<number>(0);
+  const stableLabelRef = useRef<string | null>(null);
+
+  // Ref mirror so render loops (Pixi ticker, scoring RAF) can read without re-rendering React.
+  const detectionRef = useRef<{
+    hz: number | null;
+    label: string | null;
+    confidence: number;
+    timestamp: number;
+  }>({ hz: null, label: null, confidence: 0, timestamp: 0 });
 
   const stop = useCallback(() => {
     if (rafIdRef.current) {
       cancelAnimationFrame(rafIdRef.current);
       rafIdRef.current = 0;
     }
-    meydaAnalyzerRef.current?.stop();
-    meydaAnalyzerRef.current = null;
     streamRef.current?.getTracks().forEach((track) => track.stop());
     streamRef.current = null;
     analyserRef.current = null;
     audioContextRef.current?.close();
     audioContextRef.current = null;
-    rmsRef.current = 0;
+
+    if (essentiaRef.current) {
+      essentiaRef.current = null;
+    }
+
+    smoothedHzRef.current = null;
+    lastGoodAtRef.current = 0;
+    candidateLabelRef.current = null;
+    candidateStreakRef.current = 0;
+    stableLabelRef.current = null;
+    detectionRef.current = { hz: null, label: null, confidence: 0, timestamp: 0 };
+
     setState({
       isListening: false,
       currentNote: null,
       frequency: null,
+      smoothedFrequency: null,
       loudness: 0,
       error: null,
     });
@@ -80,24 +120,10 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
       const buffer = new Float32Array(bufferLength);
       bufferRef.current = buffer;
 
-      const sampleRate = audioContext.sampleRate;
-      detectPitchRef.current = Pitchfinder.AMDF({
-        sampleRate,
-        minFrequency: config.minFrequency,
-        maxFrequency: config.maxFrequency,
-      });
+      const essentia = new Essentia(EssentiaWASM);
+      essentiaRef.current = essentia;
 
-      const meydaAnalyzer = Meyda.createMeydaAnalyzer({
-        audioContext,
-        source: source as unknown as AudioNode,
-        bufferSize: config.bufferLength,
-        featureExtractors: ['rms'],
-        callback: (features: { rms?: number }) => {
-          rmsRef.current = typeof features?.rms === 'number' ? features.rms : 0;
-        },
-      });
-      meydaAnalyzer.start();
-      meydaAnalyzerRef.current = meydaAnalyzer;
+      const sampleRate = audioContext.sampleRate;
 
       setState((s) => ({ ...s, isListening: true, error: null }));
 
@@ -105,39 +131,112 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
         const ctx = audioContextRef.current;
         const analyserNode = analyserRef.current;
         const buf = bufferRef.current;
-        const detectPitch = detectPitchRef.current;
+        const ess = essentiaRef.current;
 
-        if (!ctx || ctx.state === 'closed' || !analyserNode || !buf || !detectPitch) {
+        if (!ctx || ctx.state === 'closed' || !analyserNode || !buf || !ess) {
           return;
         }
 
-        (analyserNode as { getFloatTimeDomainData: (array: Float32Array) => void }).getFloatTimeDomainData(buf);
-        const rms = rmsRef.current;
+        (analyserNode as unknown as {
+          getFloatTimeDomainData: (array: Float32Array) => void;
+        }).getFloatTimeDomainData(buf);
 
-        setState((prev) => ({ ...prev, loudness: rms }));
+        const audioVector = ess.arrayToVector(buf);
 
-        if (rms > config.rmsThreshold) {
-          const frequency = detectPitch(buf);
-          if (frequency != null && Number.isFinite(frequency) && frequency > 0) {
-            const note = frequencyToNote(frequency);
-            const label = frequencyToNoteString(frequency);
-            setState((prev) => ({
-              ...prev,
-              frequency,
-              currentNote: note && label
-                ? { name: note.name, octave: note.octave, label, frequency }
-                : prev.currentNote,
-              loudness: rms,
-            }));
-            return;
+        let rms = 0;
+        let rawFrequency: number | null = null;
+        let confidence = 0;
+
+        try {
+          rms = ess.RMS(audioVector).rms;
+
+          if (rms > config.rmsThreshold) {
+            const pitchData = ess.PitchYin(
+              audioVector,
+              config.fftSize,
+              true,
+              config.maxFrequency,
+              config.minFrequency,
+              sampleRate,
+              0.15,
+            );
+            rawFrequency = pitchData.pitch;
+            confidence = pitchData.pitchConfidence;
           }
+        } finally {
+          audioVector.delete?.();
         }
 
-        setState((prev) => ({
-          ...prev,
-          frequency: null,
-          currentNote: null,
-        }));
+        const now = performance.now();
+        const hasGoodDetection =
+          rawFrequency != null
+          && Number.isFinite(rawFrequency)
+          && rawFrequency > 0
+          && confidence > AUDIO.minConfidence;
+
+        let smoothedHz = smoothedHzRef.current;
+        let reportedLabel: string | null = stableLabelRef.current;
+
+        if (hasGoodDetection) {
+          const alpha = AUDIO.frequencyEmaAlpha;
+          smoothedHz = smoothedHz == null
+            ? (rawFrequency as number)
+            : smoothedHz + alpha * ((rawFrequency as number) - smoothedHz);
+          smoothedHzRef.current = smoothedHz;
+          lastGoodAtRef.current = now;
+
+          const candidate = frequencyToNoteString(smoothedHz);
+          if (candidate === stableLabelRef.current) {
+            // already stable, keep streak at max
+            candidateLabelRef.current = candidate;
+            candidateStreakRef.current = AUDIO.labelStabilityFrames;
+          } else if (candidate === candidateLabelRef.current) {
+            candidateStreakRef.current += 1;
+            if (candidateStreakRef.current >= AUDIO.labelStabilityFrames) {
+              stableLabelRef.current = candidate;
+              reportedLabel = candidate;
+            }
+          } else {
+            candidateLabelRef.current = candidate;
+            candidateStreakRef.current = 1;
+          }
+        } else if (now - lastGoodAtRef.current > AUDIO.pitchHoldMs) {
+          // Long enough silence: clear everything.
+          smoothedHz = null;
+          smoothedHzRef.current = null;
+          stableLabelRef.current = null;
+          candidateLabelRef.current = null;
+          candidateStreakRef.current = 0;
+          reportedLabel = null;
+        }
+
+        // Update ref mirror every frame for high-frequency consumers.
+        detectionRef.current = {
+          hz: smoothedHz,
+          label: reportedLabel,
+          confidence,
+          timestamp: now,
+        };
+
+        setState((prev) => {
+          const nextNote =
+            reportedLabel && smoothedHz != null
+              ? (() => {
+                  const note = frequencyToNote(smoothedHz);
+                  return note
+                    ? { name: note.name, octave: note.octave, label: reportedLabel!, frequency: smoothedHz! }
+                    : prev.currentNote;
+                })()
+              : null;
+
+          return {
+            ...prev,
+            loudness: rms,
+            frequency: hasGoodDetection ? (rawFrequency as number) : null,
+            smoothedFrequency: smoothedHz,
+            currentNote: nextNote,
+          };
+        });
       };
 
       const loop = () => {
@@ -161,5 +260,5 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
     };
   }, [stop]);
 
-  return { ...state, start, stop };
+  return { ...state, detectionRef, start, stop };
 }

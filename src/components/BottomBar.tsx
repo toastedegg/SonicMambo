@@ -11,9 +11,27 @@ export interface AudioFeedback {
 
 interface BottomBarProps {
   audio: AudioFeedback | null;
+  /** Setup flow: compact primary action, left-aligned in the footer. */
+  onSetupReady?: () => void;
+  /** After user scrolls setup to the end, loop a subtle scale pulse until they leave setup or click. */
+  setupCtaPulseActive?: boolean;
 }
 
-export function BottomBar({ audio }: BottomBarProps) {
+export function BottomBar({ audio, onSetupReady, setupCtaPulseActive = false }: BottomBarProps) {
+  if (onSetupReady) {
+    return (
+      <footer className="sp-bottombar flex items-center justify-end px-6">
+        <button
+          type="button"
+          onClick={onSetupReady}
+          className={`sp-btn-primary-compact ${setupCtaPulseActive ? 'sp-setup-cta-attention' : ''}`}
+        >
+          I&rsquo;m ready &rarr; Pick a lesson
+        </button>
+      </footer>
+    );
+  }
+
   if (!audio) {
     return (
       <footer className="sp-bottombar flex items-center justify-center">

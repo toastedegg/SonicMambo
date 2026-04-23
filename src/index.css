@@ -73,6 +73,24 @@ body {
     @apply w-full py-4 px-6 rounded-full bg-sp-green hover:bg-sp-green-dark active:scale-[0.98] text-black font-bold text-lg shadow-lg shadow-sp-green/20 transition-all;
   }
 
+  .sp-btn-primary-compact {
+    @apply inline-flex items-center justify-center rounded-full bg-sp-green hover:bg-sp-green-dark active:scale-[0.98] px-4 py-2 text-sm font-semibold text-black shadow-md shadow-sp-green/15 transition-colors shrink-0 origin-center;
+  }
+
+  @keyframes sp-setup-cta-breathe {
+    0%,
+    100% {
+      transform: scale(1);
+    }
+    50% {
+      transform: scale(1.08);
+    }
+  }
+
+  .sp-setup-cta-attention {
+    animation: sp-setup-cta-breathe 1.5s ease-in-out infinite;
+  }
+
   .sp-btn-secondary {
     @apply py-2 px-5 rounded-full bg-sp-elevated hover:bg-sp-highlight text-white font-semibold text-sm transition-colors border border-sp-text-muted/30;
   }
