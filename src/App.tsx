@@ -4,7 +4,7 @@ import { Sidebar } from './components/Sidebar';
 import { BottomBar } from './components/BottomBar';
 import type { AudioFeedback } from './components/BottomBar';
 import { Lesson } from './components/Lesson';
-import { Setup } from './components/Setup';
+import { Setup } from './components/Setup.tsx';
 import { LESSONS } from './data/lessons';
 import type { Lesson as LessonType } from './types/lesson';
 
