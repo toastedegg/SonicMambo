@@ -1,11 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { LessonStaffPixi } from './LessonStaffPixi';
+import { LessonStaffPixi, type LessonStaffFlash } from './LessonStaffPixi';
 import { useAudioEngine } from '../hooks/useAudioEngine';
 import type { AudioFeedback } from './BottomBar';
-import type { Lesson as LessonType, LessonTimelineNote } from '../types/lesson';
-
-const TOLERANCE_MS = 100;
-const HIT_RATIO = 0.6;
+import type { Lesson as LessonType, LessonTimelineNote, LessonNoteStatus } from '../types/lesson';
+import { SCORING } from '../config/staff';
 
 interface LessonProps {
   lesson: LessonType;
@@ -13,15 +11,21 @@ interface LessonProps {
 }
 
 export function Lesson({ lesson, onAudioUpdate }: LessonProps) {
-  const { isListening, currentNote, frequency, loudness, error, start, stop } = useAudioEngine();
+  const { isListening, currentNote, frequency, loudness, error, detectionRef, start, stop } = useAudioEngine();
   const [isLessonRunning, setIsLessonRunning] = useState(false);
   const [lessonNotes, setLessonNotes] = useState<LessonTimelineNote[]>([]);
-  const [lessonElapsedMs, setLessonElapsedMs] = useState(0);
-  const [lessonStartedAt, setLessonStartedAt] = useState<number | null>(null);
-  const detectedLabelRef = useRef<string | null>(null);
-  const noteAccumulatorRef = useRef<Map<string, { matchFrames: number; totalFrames: number }>>(new Map());
+  const [activeTargetLabel, setActiveTargetLabel] = useState<string | null>(null);
+  const [stats, setStats] = useState({ hits: 0, misses: 0 });
+
+  const lessonStartedAtRef = useRef<number | null>(null);
+  const currentTimeRef = useRef<number>(0);
+  const noteStatusRef = useRef<Record<string, LessonNoteStatus>>({});
+  const accumulatorsRef = useRef<Map<string, { matchFrames: number; totalFrames: number }>>(new Map());
+  const flashRef = useRef<LessonStaffFlash>({ status: null, token: 0 });
+  const activeTargetLabelRef = useRef<string | null>(null);
 
   const beatMs = 60_000 / lesson.tempoBpm;
+
   const lessonDurationMs = useMemo(
     () =>
       lesson.notes.reduce((max, note) => {
@@ -31,75 +35,119 @@ export function Lesson({ lesson, onAudioUpdate }: LessonProps) {
     [beatMs, lesson.notes]
   );
 
-  useEffect(() => {
-    detectedLabelRef.current = currentNote?.label ?? null;
-  }, [currentNote?.label]);
+  // Seed the immutable timeline notes once per lesson change.
+  const timelineNotes = useMemo<LessonTimelineNote[]>(
+    () =>
+      lesson.notes.map((note) => ({
+        ...note,
+        startMs: note.startBeat * beatMs,
+        durationMs: note.durationBeats * beatMs,
+        status: 'pending' as LessonNoteStatus,
+      })),
+    [beatMs, lesson.notes]
+  );
 
   const startLesson = async () => {
     await start();
-    noteAccumulatorRef.current = new Map();
-    const seedNotes: LessonTimelineNote[] = lesson.notes.map((note) => ({
-      ...note,
-      startMs: note.startBeat * beatMs,
-      durationMs: note.durationBeats * beatMs,
-      status: 'pending',
-    }));
-    setLessonNotes(seedNotes);
-    setLessonElapsedMs(0);
-    setLessonStartedAt(performance.now());
+    accumulatorsRef.current = new Map();
+    noteStatusRef.current = {};
+    flashRef.current = { status: null, token: 0 };
+    activeTargetLabelRef.current = null;
+    setLessonNotes(timelineNotes);
+    setActiveTargetLabel(null);
+    setStats({ hits: 0, misses: 0 });
+    currentTimeRef.current = 0;
+    lessonStartedAtRef.current = performance.now();
     setIsLessonRunning(true);
   };
 
   const stopLesson = () => {
     setIsLessonRunning(false);
-    setLessonStartedAt(null);
-    setLessonElapsedMs(0);
+    lessonStartedAtRef.current = null;
+    currentTimeRef.current = 0;
     stop();
   };
 
+  // Scoring + time loop. Runs only while a lesson is in progress.
   useEffect(() => {
-    if (!isLessonRunning || lessonStartedAt == null) return undefined;
+    if (!isLessonRunning || lessonStartedAtRef.current == null) return undefined;
+
+    const tolMs = SCORING.toleranceBeats * beatMs;
+    const accumulators = accumulatorsRef.current;
+    const statuses = noteStatusRef.current;
 
     let rafId = 0;
-    const accumulators = noteAccumulatorRef.current;
 
     const loop = () => {
-      const elapsed = performance.now() - lessonStartedAt;
-      setLessonElapsedMs(elapsed);
+      const startedAt = lessonStartedAtRef.current ?? performance.now();
+      const elapsed = performance.now() - startedAt;
+      currentTimeRef.current = elapsed;
 
-      const detectedLabel = detectedLabelRef.current;
+      const detectedLabel = detectionRef.current.label;
 
-      setLessonNotes((prev) =>
-        prev.map((note) => {
-          if (note.status !== 'pending') return note;
+      let activeLabel: string | null = null;
+      let statusChanged = false;
+      let newHits = 0;
+      let newMisses = 0;
 
-          const noteOpen = note.startMs - TOLERANCE_MS;
-          const noteClose = note.startMs + note.durationMs + TOLERANCE_MS;
+      for (const note of timelineNotes) {
+        const prevStatus = statuses[note.id] ?? 'pending';
+        const windowStart = note.startMs - tolMs;
+        const windowEnd = note.startMs + note.durationMs + tolMs;
 
-          if (elapsed >= noteOpen && elapsed <= noteClose) {
-            let acc = accumulators.get(note.id);
-            if (!acc) {
-              acc = { matchFrames: 0, totalFrames: 0 };
-              accumulators.set(note.id, acc);
-            }
-            acc.totalFrames++;
-            if (detectedLabel === note.label) {
-              acc.matchFrames++;
-            }
-            return note;
+        // UI target: strictly within [start, end), regardless of tolerance.
+        if (elapsed >= note.startMs && elapsed < note.startMs + note.durationMs) {
+          activeLabel = note.label;
+        }
+
+        if (prevStatus !== 'pending') {
+          if (prevStatus === 'hit') newHits += 1;
+          else if (prevStatus === 'miss') newMisses += 1;
+          continue;
+        }
+
+        if (elapsed >= windowStart && elapsed < windowEnd) {
+          let acc = accumulators.get(note.id);
+          if (!acc) {
+            acc = { matchFrames: 0, totalFrames: 0 };
+            accumulators.set(note.id, acc);
           }
-
-          if (elapsed > noteClose) {
-            const acc = accumulators.get(note.id);
-            const ratio = acc && acc.totalFrames > 0 ? acc.matchFrames / acc.totalFrames : 0;
-            return { ...note, status: ratio >= HIT_RATIO ? 'hit' : 'miss' };
+          acc.totalFrames += 1;
+          if (detectedLabel && detectedLabel === note.label) {
+            acc.matchFrames += 1;
           }
+        } else if (elapsed >= windowEnd) {
+          const acc = accumulators.get(note.id);
+          const ratio = acc && acc.totalFrames > 0 ? acc.matchFrames / acc.totalFrames : 0;
+          const finalStatus: LessonNoteStatus = ratio >= SCORING.hitRatio ? 'hit' : 'miss';
+          statuses[note.id] = finalStatus;
+          statusChanged = true;
+          flashRef.current = {
+            status: finalStatus,
+            token: flashRef.current.token + 1,
+          };
+          if (finalStatus === 'hit') newHits += 1;
+          else newMisses += 1;
+        }
+      }
 
-          return note;
-        })
-      );
+      if (statusChanged) {
+        setLessonNotes((prev) =>
+          prev.map((note) => {
+            const next = statuses[note.id];
+            if (!next || next === note.status) return note;
+            return { ...note, status: next };
+          })
+        );
+        setStats({ hits: newHits, misses: newMisses });
+      }
 
-      if (elapsed > lessonDurationMs + 600) {
+      if (activeLabel !== activeTargetLabelRef.current) {
+        activeTargetLabelRef.current = activeLabel;
+        setActiveTargetLabel(activeLabel);
+      }
+
+      if (elapsed > lessonDurationMs + beatMs) {
         setIsLessonRunning(false);
         return;
       }
@@ -111,31 +159,12 @@ export function Lesson({ lesson, onAudioUpdate }: LessonProps) {
     return () => {
       cancelAnimationFrame(rafId);
     };
-  }, [isLessonRunning, lessonDurationMs, lessonStartedAt]);
+  }, [beatMs, detectionRef, isLessonRunning, lessonDurationMs, timelineNotes]);
 
-  const activeTargetNote = useMemo(() => {
-    if (!isLessonRunning) return null;
-    return lessonNotes.find((note) => lessonElapsedMs >= note.startMs && lessonElapsedMs <= note.startMs + note.durationMs) ?? null;
-  }, [isLessonRunning, lessonElapsedMs, lessonNotes]);
-
-  const scoringTargetNote = useMemo(() => {
-    if (!isLessonRunning) return null;
-    return lessonNotes.find((note) =>
-      note.status === 'pending'
-      && lessonElapsedMs >= note.startMs - TOLERANCE_MS
-      && lessonElapsedMs <= note.startMs + note.durationMs + TOLERANCE_MS
-    ) ?? null;
-  }, [isLessonRunning, lessonElapsedMs, lessonNotes]);
-
-  const stats = useMemo(() => {
-    const hits = lessonNotes.filter((note) => note.status === 'hit').length;
-    const misses = lessonNotes.filter((note) => note.status === 'miss').length;
-    return { hits, misses };
-  }, [lessonNotes]);
-
+  // Forward audio feedback to the bottom bar.
   useEffect(() => {
-    const isMatch = scoringTargetNote && currentNote?.label
-      ? currentNote.label === scoringTargetNote.label
+    const isMatch = activeTargetLabel && currentNote?.label
+      ? currentNote.label === activeTargetLabel
       : null;
 
     onAudioUpdate({
@@ -143,12 +172,12 @@ export function Lesson({ lesson, onAudioUpdate }: LessonProps) {
       frequency: frequency ?? null,
       loudness,
       isListening,
-      targetLabel: activeTargetNote?.label ?? null,
+      targetLabel: activeTargetLabel,
       isMatch,
       hits: stats.hits,
       misses: stats.misses,
     });
-  }, [currentNote?.label, frequency, loudness, isListening, activeTargetNote, scoringTargetNote, stats, onAudioUpdate]);
+  }, [currentNote?.label, frequency, loudness, isListening, activeTargetLabel, stats, onAudioUpdate]);
 
   return (
     <div className="flex flex-col gap-4 p-6 max-w-4xl mx-auto">
@@ -170,15 +199,17 @@ export function Lesson({ lesson, onAudioUpdate }: LessonProps) {
       <section className="sp-card-padded text-center">
         <p className="sp-section-label mb-2">Target note</p>
         <p className="text-4xl font-extrabold text-white">
-          {activeTargetNote ? activeTargetNote.label : 'Press Start'}
+          {activeTargetLabel ?? 'Press Start'}
         </p>
       </section>
 
       <LessonStaffPixi
-        notes={lessonNotes}
-        currentTimeMs={lessonElapsedMs}
-        durationMs={lessonDurationMs}
-        detectedNoteLabel={currentNote?.label ?? null}
+        notes={lessonNotes.length > 0 ? lessonNotes : timelineNotes}
+        beatMs={beatMs}
+        currentTimeRef={currentTimeRef}
+        detectionRef={detectionRef}
+        noteStatusRef={noteStatusRef}
+        flashRef={flashRef}
       />
 
       {error && (
