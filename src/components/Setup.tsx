@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useAudioEngine } from '../hooks/useAudioEngine';
 import { MicCheck } from './MicCheck';
 import { Tuner } from './Tuner';
@@ -14,15 +14,18 @@ import {
   AppIcon,
 } from './SignalChainDiagram';
 
-interface SetupProps {
-  onFinish: () => void;
-}
-
 type InputProfile = 'interface' | 'laptop-mic' | 'micd-amp';
 
 const INPUT_PROFILE_KEY = 'sonicmambo:inputProfile';
 
-export function Setup({ onFinish }: SetupProps) {
+interface SetupProps {
+  /** Fires once each time the user scrolls the main column so the page bottom enters view (CTA pulse in footer). */
+  onReachedScrollEnd?: () => void;
+  /** Mirrors `useAudioEngine` capture state for the global top bar (Mic On / Mic Off). */
+  onMicListeningChange?: (listening: boolean) => void;
+}
+
+export function Setup({ onReachedScrollEnd, onMicListeningChange }: SetupProps) {
   const {
     isListening,
     loudness,
@@ -48,6 +51,34 @@ export function Setup({ onFinish }: SetupProps) {
   useEffect(() => {
     return () => stop();
   }, [stop]);
+
+  useEffect(() => {
+    onMicListeningChange?.(isListening);
+  }, [isListening, onMicListeningChange]);
+
+  const scrollEndSentinelRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const sentinel = scrollEndSentinelRef.current;
+    if (!sentinel || !onReachedScrollEnd) return;
+
+    const root = sentinel.closest('main');
+    let wasIntersecting = false;
+
+    const io = new IntersectionObserver(
+      (entries) => {
+        const hit = entries[0]?.isIntersecting ?? false;
+        if (hit && !wasIntersecting) {
+          onReachedScrollEnd();
+        }
+        wasIntersecting = hit;
+      },
+      { root: root ?? undefined, rootMargin: '0px 0px -12px 0px', threshold: 0.72 },
+    );
+
+    io.observe(sentinel);
+    return () => io.disconnect();
+  }, [onReachedScrollEnd]);
 
   const handleProfileSelect = useCallback((p: InputProfile) => {
     setProfile(p);
@@ -132,7 +163,7 @@ export function Setup({ onFinish }: SetupProps) {
           <button
             type="button"
             onClick={() => start()}
-            className="sp-btn-primary max-w-xs"
+            className="sp-btn-primary-compact max-w-xs"
           >
             Turn on mic
           </button>
@@ -183,11 +214,11 @@ export function Setup({ onFinish }: SetupProps) {
             ]}
           />
           <DeviceInstructions
-            title="Browser (per site)"
+            title="Chrome"
             steps={[
-              'Click the padlock/site icon in the URL bar',
-              'Open "Site settings" or "Permissions"',
-              'Set Microphone to your interface',
+              'Settings → Privacy and security → Site settings → Microphone',
+              'Choose your interface as the microphone input',
+              'Reload this page',
             ]}
           />
         </div>
@@ -238,11 +269,11 @@ export function Setup({ onFinish }: SetupProps) {
         </ul>
       </div>
 
-      <div className="sticky bottom-4 flex justify-end">
-        <button type="button" onClick={onFinish} className="sp-btn-primary max-w-sm">
-          I&rsquo;m ready &rarr; Pick a lesson
-        </button>
-      </div>
+      <div
+        ref={scrollEndSentinelRef}
+        className="h-2 w-full shrink-0"
+        aria-hidden
+      />
     </div>
   );
 }

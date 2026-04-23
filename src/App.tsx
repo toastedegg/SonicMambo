@@ -4,7 +4,7 @@ import { Sidebar } from './components/Sidebar';
 import { BottomBar } from './components/BottomBar';
 import type { AudioFeedback } from './components/BottomBar';
 import { Lesson } from './components/Lesson';
-import { Setup } from './components/Setup.tsx';
+import { Setup } from './components/Setup';
 import { LESSONS } from './data/lessons';
 import type { Lesson as LessonType } from './types/lesson';
 
@@ -15,12 +15,21 @@ type View =
 
 const ONBOARDED_KEY = 'sonicmambo:onboarded';
 
+/** True only after the user completes setup (localStorage flag). No cookie — missing key = first visit. */
 function readOnboarded(): boolean {
   try {
     return typeof window !== 'undefined' && window.localStorage.getItem(ONBOARDED_KEY) === '1';
   } catch {
     return false;
   }
+}
+
+function getInitialAppState(): { onboarded: boolean; view: View } {
+  const onboarded = readOnboarded();
+  return {
+    onboarded,
+    view: onboarded ? { kind: 'home' } : { kind: 'setup' },
+  };
 }
 
 function writeOnboarded() {
@@ -32,16 +41,37 @@ function writeOnboarded() {
 }
 
 function App() {
-  const [onboarded, setOnboarded] = useState<boolean>(() => readOnboarded());
-  const [view, setView] = useState<View>(() =>
-    readOnboarded() ? { kind: 'home' } : { kind: 'setup' }
-  );
+  const init = getInitialAppState();
+  const [onboarded, setOnboarded] = useState<boolean>(init.onboarded);
+  const [view, setView] = useState<View>(init.view);
   const [audioFeedback, setAudioFeedback] = useState<AudioFeedback | null>(null);
+  const [setupCtaPulseActive, setSetupCtaPulseActive] = useState(false);
+  const [setupMicListening, setSetupMicListening] = useState(false);
 
+  /** Always opens Home (e.g. back from lesson, or setup exit when already onboarded). */
   const handleGoHome = useCallback(() => {
     setView({ kind: 'home' });
     setAudioFeedback(null);
   }, []);
+
+  /** Sidebar Home: first-time users stay on Setup until they finish onboarding. */
+  const handleSidebarHome = useCallback(() => {
+    setAudioFeedback(null);
+    if (!onboarded) {
+      setView({ kind: 'setup' });
+      return;
+    }
+    setView({ kind: 'home' });
+  }, [onboarded]);
+
+  const handleTopBarBack = useCallback(() => {
+    setAudioFeedback(null);
+    if (view.kind === 'lesson') {
+      setView({ kind: 'home' });
+    } else {
+      handleGoHome();
+    }
+  }, [view.kind, handleGoHome]);
 
   const handleGoSetup = useCallback(() => {
     setView({ kind: 'setup' });
@@ -59,10 +89,28 @@ function App() {
     setView({ kind: 'home' });
   }, []);
 
+  const handleSetupReachedBottom = useCallback(() => {
+    setSetupCtaPulseActive(true);
+  }, []);
+
   // Stop surfacing stale lesson feedback when the user leaves a lesson view.
   useEffect(() => {
     if (view.kind !== 'lesson') setAudioFeedback(null);
   }, [view.kind]);
+
+  useEffect(() => {
+    if (view.kind !== 'setup') {
+      setSetupCtaPulseActive(false);
+      setSetupMicListening(false);
+    }
+  }, [view.kind]);
+
+  const topBarMicActive =
+    view.kind === 'lesson'
+      ? (audioFeedback?.isListening ?? false)
+      : view.kind === 'setup'
+        ? setupMicListening
+        : false;
 
   const activeLessonId = view.kind === 'lesson' ? view.lesson.id : null;
   const lessonTitle = view.kind === 'lesson' ? view.lesson.title : null;
@@ -72,8 +120,8 @@ function App() {
     <div className="h-screen flex flex-col overflow-hidden bg-sp-black font-display">
       <TopBar
         lessonTitle={lessonTitle}
-        isListening={audioFeedback?.isListening ?? false}
-        onBack={canGoBack ? handleGoHome : null}
+        isListening={topBarMicActive}
+        onBack={canGoBack ? handleTopBarBack : null}
       />
 
       <div className="flex-1 flex min-h-0">
@@ -82,7 +130,7 @@ function App() {
           activeLessonId={activeLessonId}
           activeTopLevel={view.kind === 'setup' ? 'setup' : view.kind === 'home' ? 'home' : null}
           onSelectLesson={handleSelectLesson}
-          onGoHome={handleGoHome}
+          onGoHome={handleSidebarHome}
           onGoSetup={handleGoSetup}
         />
 
@@ -95,7 +143,10 @@ function App() {
                 onAudioUpdate={setAudioFeedback}
               />
             ) : view.kind === 'setup' ? (
-              <Setup onFinish={handleSetupFinish} />
+              <Setup
+                onReachedScrollEnd={handleSetupReachedBottom}
+                onMicListeningChange={setSetupMicListening}
+              />
             ) : (
               <HomeView
                 onSelectLesson={handleSelectLesson}
@@ -107,7 +158,11 @@ function App() {
         </main>
       </div>
 
-      <BottomBar audio={audioFeedback} />
+      <BottomBar
+        audio={audioFeedback}
+        onSetupReady={view.kind === 'setup' ? handleSetupFinish : undefined}
+        setupCtaPulseActive={view.kind === 'setup' && setupCtaPulseActive}
+      />
     </div>
   );
 }

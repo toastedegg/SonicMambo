@@ -9,7 +9,7 @@ export function TopBar({ lessonTitle, isListening, onBack }: TopBarProps) {
     <header className="sp-topbar">
       <div className="flex items-center gap-3">
         <span className="text-xl font-extrabold tracking-tight text-sp-green">
-          SonicMambo
+          Sonic Mambo
         </span>
       </div>
 
