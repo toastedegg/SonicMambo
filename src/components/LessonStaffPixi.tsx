@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'react';
 import { Application, Container, Graphics, Text } from 'pixi.js';
 import type { LessonTimelineNote, LessonNoteStatus } from '../types/lesson';
 import { STAFF } from '../config/staff';
-import { frequencyToMidi, noteLabelToMidi } from '../utils/noteFromFrequency';
+import { noteLabelToMidi } from '../utils/noteFromFrequency';
 
 export interface DetectionRef {
   hz: number | null;
@@ -11,19 +11,11 @@ export interface DetectionRef {
   timestamp: number;
 }
 
-export interface LessonStaffFlash {
-  status: 'hit' | 'miss' | null;
-  /** Monotonic counter bumped each time a flash should fire. */
-  token: number;
-}
-
 interface LessonStaffPixiProps {
   notes: LessonTimelineNote[];
-  beatMs: number;
   currentTimeRef: React.MutableRefObject<number>;
   detectionRef: React.MutableRefObject<DetectionRef>;
   noteStatusRef: React.MutableRefObject<Record<string, LessonNoteStatus>>;
-  flashRef: React.MutableRefObject<LessonStaffFlash>;
   height?: number;
 }
 
@@ -31,17 +23,11 @@ const COLORS = {
   staff: 0x3a4252,
   staffBright: 0x5a6676,
   pending: 0xcbd3dd,
+  active: 0xffd666,
+  matchLive: 0x73e69a,
   hit: 0x1db954,
   miss: 0xff4b4b,
-  hitLine: 0x1db954,
-  hitLineGlow: 0x1db954,
   text: 0x9aa3b2,
-  ribbon: 0xff9500,
-  ribbonGlow: 0xffb347,
-  activeHead: 0xffd666,
-  holdBarPending: 0x57616f,
-  holdBarHit: 0x1db954,
-  holdBarMiss: 0xff4b4b,
 } as const;
 
 /** Semitone (0=C..11=B) -> half-step position on the diatonic staff, within one octave.
@@ -69,43 +55,44 @@ function labelToDiatonic(label: string): number {
 const BOTTOM_LINE = labelToDiatonic('E3');
 const TOP_LINE = BOTTOM_LINE + 8;
 
+type NoteShape = 'quarter' | 'half' | 'whole';
+
+function shapeForDuration(durationBeats: number): NoteShape {
+  if (durationBeats >= 4) return 'whole';
+  if (durationBeats >= 2) return 'half';
+  return 'quarter';
+}
+
 interface NoteVisual {
   note: LessonTimelineNote;
   container: Container;
   head: Graphics;
   stem: Graphics;
-  holdBar: Graphics;
   ledger: Graphics;
-  lastStatus: LessonNoteStatus | null;
+  anchorX: number;
+  lastStatus: LessonNoteStatus;
   lastActive: boolean;
+  lastMatching: boolean;
+  pulseStartedAt: number | null;
+  pulseKind: 'hit' | 'miss' | null;
 }
 
 export function LessonStaffPixi({
   notes,
-  beatMs,
   currentTimeRef,
   detectionRef,
   noteStatusRef,
-  flashRef,
-  height = 240,
+  height = 220,
 }: LessonStaffPixiProps) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const appRef = useRef<Application | null>(null);
 
-  // Layers (persistent across renders)
+  // Persistent layers
   const staffLayerRef = useRef<Graphics | null>(null);
   const clefLayerRef = useRef<Container | null>(null);
   const notesLayerRef = useRef<Container | null>(null);
-  const ribbonLayerRef = useRef<Graphics | null>(null);
-  const hitLineLayerRef = useRef<Graphics | null>(null);
-  const hitFlashLayerRef = useRef<Graphics | null>(null);
 
   const noteVisualsRef = useRef<Map<string, NoteVisual>>(new Map());
-  const ribbonBufferRef = useRef<Array<{ t: number; step: number }>>([]);
-  const lastFlashTokenRef = useRef(0);
-  const flashStartedAtRef = useRef<number | null>(null);
-  const flashStatusRef = useRef<'hit' | 'miss' | null>(null);
-
   const viewportRef = useRef<{ width: number; height: number }>({ width: 760, height });
 
   // -------- Setup Pixi app once --------
@@ -137,29 +124,20 @@ export function LessonStaffPixi({
       appRef.current = app;
       viewportRef.current = { width, height };
 
-      // Build persistent layers (bottom -> top).
       const staff = new Graphics();
       const clef = new Container();
-      const ribbon = new Graphics();
       const notesLayer = new Container();
-      const hitLine = new Graphics();
-      const hitFlash = new Graphics();
 
       app.stage.addChild(staff);
-      app.stage.addChild(ribbon);
       app.stage.addChild(notesLayer);
-      app.stage.addChild(hitLine);
-      app.stage.addChild(hitFlash);
       app.stage.addChild(clef);
 
       staffLayerRef.current = staff;
       clefLayerRef.current = clef;
       notesLayerRef.current = notesLayer;
-      ribbonLayerRef.current = ribbon;
-      hitLineLayerRef.current = hitLine;
-      hitFlashLayerRef.current = hitFlash;
 
       drawStaticLayers();
+      rebuildNoteVisuals();
       app.ticker.add(tick);
     };
 
@@ -176,11 +154,7 @@ export function LessonStaffPixi({
       staffLayerRef.current = null;
       clefLayerRef.current = null;
       notesLayerRef.current = null;
-      ribbonLayerRef.current = null;
-      hitLineLayerRef.current = null;
-      hitFlashLayerRef.current = null;
       noteVisualsRef.current.clear();
-      ribbonBufferRef.current = [];
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -199,6 +173,7 @@ export function LessonStaffPixi({
       viewportRef.current = { width: newWidth, height };
       app.renderer.resize(newWidth, height);
       drawStaticLayers();
+      layoutNoteVisuals();
     });
     ro.observe(host);
     return () => ro.disconnect();
@@ -213,13 +188,26 @@ export function LessonStaffPixi({
   }, [notes]);
 
   // ----------------------------------------------------------------
-  // Geometry helpers (read from viewportRef so they're always current)
+  // Geometry helpers
   // ----------------------------------------------------------------
   const staffBottomY = () => STAFF.topLineY + STAFF.lineGap * 4;
-  const hitX = () => viewportRef.current.width * STAFF.hitLineFraction;
   const stepHeightPx = () => STAFF.lineGap / 2;
-
   const diatonicToY = (step: number) => staffBottomY() - (step - BOTTOM_LINE) * stepHeightPx();
+
+  function computeSlotWidth() {
+    const { width } = viewportRef.current;
+    const contentLeft = STAFF.clefWidth + STAFF.leftPadding;
+    const contentRight = width - STAFF.rightPadding;
+    const available = Math.max(0, contentRight - contentLeft);
+    const count = Math.max(1, notes.length);
+    return Math.max(STAFF.minSlotWidth, available / count);
+  }
+
+  function slotX(index: number) {
+    const slotW = computeSlotWidth();
+    const contentLeft = STAFF.clefWidth + STAFF.leftPadding;
+    return contentLeft + (index + 0.5) * slotW;
+  }
 
   // ----------------------------------------------------------------
   // Static drawing (staff lines + clef marker)
@@ -232,21 +220,18 @@ export function LessonStaffPixi({
     const { width } = viewportRef.current;
     staff.clear();
 
-    // Background tint for the staff band (subtle, helps separate from page).
     const bandTop = STAFF.topLineY - 10;
     const bandBottom = staffBottomY() + 10;
     staff.rect(0, bandTop, width, bandBottom - bandTop).fill({ color: 0x0d1017, alpha: 0.35 });
 
-    // 5 staff lines.
     for (let i = 0; i < 5; i += 1) {
       const y = staffBottomY() - i * STAFF.lineGap;
       staff
-        .moveTo(48, y)
+        .moveTo(STAFF.clefWidth - 4, y)
         .lineTo(width - 8, y)
         .stroke({ width: 1.5, color: COLORS.staff, alpha: 0.95 });
     }
 
-    // Simple left-edge brace (stylized, not a real clef glyph yet).
     clef.removeChildren();
     const brace = new Graphics();
     brace
@@ -267,31 +252,25 @@ export function LessonStaffPixi({
     const layer = notesLayerRef.current;
     if (!layer) return;
 
-    // Dispose existing visuals.
     noteVisualsRef.current.forEach((v) => {
       v.container.destroy({ children: true });
     });
     noteVisualsRef.current.clear();
     layer.removeChildren();
 
-    notes.forEach((note) => {
-      const step = labelToDiatonic(note.label);
-      const y = diatonicToY(step);
-
+    notes.forEach((note, index) => {
       const container = new Container();
-      container.y = 0; // all positioning is via per-element y; container carries x translation.
+      container.x = slotX(index);
+      container.y = 0;
 
       const ledger = new Graphics();
-      const holdBar = new Graphics();
       const head = new Graphics();
       const stem = new Graphics();
 
-      container.addChild(holdBar);
       container.addChild(ledger);
       container.addChild(head);
       container.addChild(stem);
 
-      // Label under note (kept visible, small).
       const label = new Text({
         text: note.label,
         style: {
@@ -312,20 +291,37 @@ export function LessonStaffPixi({
         container,
         head,
         stem,
-        holdBar,
         ledger,
-        lastStatus: null,
+        anchorX: container.x,
+        lastStatus: 'pending',
         lastActive: false,
+        lastMatching: false,
+        pulseStartedAt: null,
+        pulseKind: null,
       };
 
-      drawNoteHead(visual, 'pending', false);
-      drawLedgerLines(visual, step, y);
-      drawHoldBar(visual, 'pending');
+      drawLedgerLines(visual);
+      drawNoteHead(visual, 'pending', false, false);
       noteVisualsRef.current.set(note.id, visual);
     });
   }
 
-  function drawLedgerLines(v: NoteVisual, step: number, y: number) {
+  /** Re-place existing containers after a resize (no destroy/rebuild needed). */
+  function layoutNoteVisuals() {
+    let i = 0;
+    notes.forEach((note) => {
+      const v = noteVisualsRef.current.get(note.id);
+      if (v) {
+        const x = slotX(i);
+        v.anchorX = x;
+        v.container.x = x;
+      }
+      i += 1;
+    });
+  }
+
+  function drawLedgerLines(v: NoteVisual) {
+    const step = labelToDiatonic(v.note.label);
     const ledger = v.ledger;
     ledger.clear();
     const w = 14;
@@ -346,203 +342,113 @@ export function LessonStaffPixi({
           .stroke({ width: 1.5, color: COLORS.staff, alpha: 0.95 });
       }
     }
-    // ensure y=0 at head position isn't needed since we drew in world-y within container
-    void y;
   }
 
-  function drawNoteHead(v: NoteVisual, status: LessonNoteStatus, active: boolean) {
+  function headColor(status: LessonNoteStatus, active: boolean, matching: boolean): number {
+    if (status === 'hit') return COLORS.hit;
+    if (status === 'miss') return COLORS.miss;
+    if (active && matching) return COLORS.matchLive;
+    if (active) return COLORS.active;
+    return COLORS.pending;
+  }
+
+  function drawNoteHead(v: NoteVisual, status: LessonNoteStatus, active: boolean, matching: boolean) {
     const step = labelToDiatonic(v.note.label);
     const y = diatonicToY(step);
-    const isHalfOrLonger = v.note.durationBeats >= 2;
-    const color =
-      status === 'hit' ? COLORS.hit
-        : status === 'miss' ? COLORS.miss
-          : active ? COLORS.activeHead
-            : COLORS.pending;
+    const shape = shapeForDuration(v.note.durationBeats);
+    const color = headColor(status, active, matching);
 
     v.head.clear();
-    if (isHalfOrLonger) {
-      // Hollow oval.
-      v.head
-        .ellipse(0, y, 9, 6.5)
-        .fill({ color: 0x0b0f16, alpha: 1 })
-        .stroke({ width: 2.2, color });
-    } else {
-      // Filled oval.
+    if (shape === 'quarter') {
       v.head
         .ellipse(0, y, 9, 6.5)
         .fill({ color })
         .stroke({ width: 1.2, color: 0x000000, alpha: 0.4 });
+    } else {
+      // Half and whole use a hollow oval.
+      v.head
+        .ellipse(0, y, 9.5, 6.8)
+        .fill({ color: 0x0b0f16, alpha: 1 })
+        .stroke({ width: 2.2, color });
     }
-    if (active) {
-      // Soft active glow.
+    if (active && status === 'pending') {
       v.head
         .ellipse(0, y, 13, 9.5)
-        .stroke({ width: 1.5, color: COLORS.activeHead, alpha: 0.7 });
+        .stroke({ width: 1.5, color, alpha: 0.7 });
     }
 
     // Stem direction: below middle line -> stem up, at/above -> stem down.
+    // Whole notes have no stem.
     const middleLine = BOTTOM_LINE + 4;
     v.stem.clear();
-    if (step < middleLine) {
-      v.stem
-        .moveTo(9, y)
-        .lineTo(9, y - 28)
-        .stroke({ width: 1.8, color });
-    } else {
-      v.stem
-        .moveTo(-9, y)
-        .lineTo(-9, y + 28)
-        .stroke({ width: 1.8, color });
+    if (shape !== 'whole') {
+      if (step < middleLine) {
+        v.stem
+          .moveTo(9, y)
+          .lineTo(9, y - 28)
+          .stroke({ width: 1.8, color });
+      } else {
+        v.stem
+          .moveTo(-9, y)
+          .lineTo(-9, y + 28)
+          .stroke({ width: 1.8, color });
+      }
     }
   }
 
-  function drawHoldBar(v: NoteVisual, status: LessonNoteStatus) {
-    const bar = v.holdBar;
-    const step = labelToDiatonic(v.note.label);
-    const y = diatonicToY(step);
-    const widthPx = v.note.durationBeats * STAFF.pixelsPerBeat;
-    const barHeight = 10;
-    const color =
-      status === 'hit' ? COLORS.holdBarHit
-        : status === 'miss' ? COLORS.holdBarMiss
-          : COLORS.holdBarPending;
-    const alpha = status === 'pending' ? 0.55 : 0.85;
-
-    bar.clear();
-    bar
-      .roundRect(0, y - barHeight / 2, widthPx, barHeight, barHeight / 2)
-      .fill({ color, alpha });
-    // Leading edge accent.
-    bar
-      .moveTo(0, y - barHeight / 2)
-      .lineTo(0, y + barHeight / 2)
-      .stroke({ width: 2, color, alpha: 0.95 });
-  }
-
   // ----------------------------------------------------------------
-  // Per-tick render
+  // Per-tick update: only color/scale/alpha changes, no position motion
   // ----------------------------------------------------------------
   function tick() {
-    const app = appRef.current;
     const notesLayer = notesLayerRef.current;
-    const hitLine = hitLineLayerRef.current;
-    const hitFlash = hitFlashLayerRef.current;
-    const ribbon = ribbonLayerRef.current;
-    if (!app || !notesLayer || !hitLine || !hitFlash || !ribbon) return;
+    if (!notesLayer) return;
 
     const now = performance.now();
     const timeMs = currentTimeRef.current;
-    const currentBeat = beatMs > 0 ? timeMs / beatMs : 0;
-    const hx = hitX();
-    const { width } = viewportRef.current;
-
-    // --- Notes: update x, status color, active glow ---
     const statuses = noteStatusRef.current;
+    const detectedLabel = detectionRef.current.label;
+
     noteVisualsRef.current.forEach((v) => {
-      const startBeat = v.note.startBeat;
-      const endBeat = startBeat + v.note.durationBeats;
-      const x = hx + (startBeat - currentBeat) * STAFF.pixelsPerBeat;
-      v.container.x = x;
-
-      // Cull when fully off-screen (left of brace or far right of viewport).
-      const rightEdge = x + v.note.durationBeats * STAFF.pixelsPerBeat;
-      v.container.visible = rightEdge > 40 && x < width + 40;
-
       const status = statuses[v.note.id] ?? 'pending';
-      const isActive = status === 'pending' && currentBeat >= startBeat && currentBeat < endBeat;
+      const inWindow = timeMs >= v.note.startMs && timeMs < v.note.startMs + v.note.durationMs;
+      const isActive = status === 'pending' && inWindow;
+      const isMatching = isActive && detectedLabel != null && detectedLabel === v.note.label;
 
-      if (status !== v.lastStatus || isActive !== v.lastActive) {
-        drawNoteHead(v, status, isActive);
-        drawHoldBar(v, status);
+      // Kick off a pulse on pending -> hit/miss transition.
+      if (v.lastStatus === 'pending' && (status === 'hit' || status === 'miss')) {
+        v.pulseStartedAt = now;
+        v.pulseKind = status;
+      }
+
+      // Redraw head/stem only when visual state actually changes.
+      if (status !== v.lastStatus || isActive !== v.lastActive || isMatching !== v.lastMatching) {
+        drawNoteHead(v, status, isActive, isMatching);
         v.lastStatus = status;
         v.lastActive = isActive;
+        v.lastMatching = isMatching;
+      }
+
+      // Per-note pulse: local scale bounce on hit, local alpha dim on miss.
+      if (v.pulseStartedAt != null && v.pulseKind != null) {
+        const progress = (now - v.pulseStartedAt) / STAFF.activePulseDurationMs;
+        if (progress >= 1) {
+          v.pulseStartedAt = null;
+          v.pulseKind = null;
+          v.container.scale.set(1);
+          v.container.alpha = 1;
+        } else {
+          const wave = Math.sin(progress * Math.PI); // 0 -> 1 -> 0
+          if (v.pulseKind === 'hit') {
+            const scale = 1 + 0.22 * wave;
+            v.container.scale.set(scale);
+            v.container.alpha = 1;
+          } else {
+            v.container.scale.set(1);
+            v.container.alpha = 1 - 0.4 * wave;
+          }
+        }
       }
     });
-
-    // --- Hit line ---
-    hitLine.clear();
-    hitLine
-      .rect(hx - 2, STAFF.topLineY - 30, 4, (staffBottomY() - STAFF.topLineY) + 60)
-      .fill({ color: COLORS.hitLine, alpha: 0.95 });
-    hitLine
-      .rect(hx - 8, STAFF.topLineY - 30, 16, (staffBottomY() - STAFF.topLineY) + 60)
-      .fill({ color: COLORS.hitLineGlow, alpha: 0.12 });
-
-    // --- Hit/miss flash ---
-    const flash = flashRef.current;
-    if (flash.token !== lastFlashTokenRef.current) {
-      lastFlashTokenRef.current = flash.token;
-      flashStartedAtRef.current = now;
-      flashStatusRef.current = flash.status;
-    }
-    hitFlash.clear();
-    if (flashStartedAtRef.current != null && flashStatusRef.current) {
-      const elapsed = now - flashStartedAtRef.current;
-      const progress = Math.min(elapsed / STAFF.flashDurationMs, 1);
-      if (progress >= 1) {
-        flashStartedAtRef.current = null;
-        flashStatusRef.current = null;
-      } else {
-        const flashColor = flashStatusRef.current === 'hit' ? COLORS.hit : COLORS.miss;
-        const alpha = (1 - progress) * 0.55;
-        const radius = 20 + progress * 80;
-        hitFlash
-          .rect(hx - radius, STAFF.topLineY - 30, radius * 2, (staffBottomY() - STAFF.topLineY) + 60)
-          .fill({ color: flashColor, alpha });
-      }
-    }
-
-    // --- Pitch ribbon: sample and draw ---
-    const det = detectionRef.current;
-    const buf = ribbonBufferRef.current;
-    if (det.hz != null && Number.isFinite(det.hz)) {
-      const step = midiToDiatonic(frequencyToMidi(det.hz));
-      buf.push({ t: timeMs, step });
-    } else {
-      // Push a "gap" marker so we don't connect across silence.
-      buf.push({ t: timeMs, step: Number.NaN });
-    }
-    // Drop samples outside the visible window.
-    const oldestVisibleTime = timeMs - STAFF.ribbonWindowMs;
-    while (buf.length > 0 && buf[0].t < oldestVisibleTime) buf.shift();
-    if (buf.length > STAFF.ribbonBufferSize) {
-      buf.splice(0, buf.length - STAFF.ribbonBufferSize);
-    }
-
-    ribbon.clear();
-    if (buf.length > 1) {
-      let drawing = false;
-      for (let i = 0; i < buf.length; i += 1) {
-        const sample = buf[i];
-        if (!Number.isFinite(sample.step)) {
-          drawing = false;
-          continue;
-        }
-        const sx = hx + ((sample.t - timeMs) / beatMs) * STAFF.pixelsPerBeat;
-        const sy = diatonicToY(sample.step);
-        if (!drawing) {
-          ribbon.moveTo(sx, sy);
-          drawing = true;
-        } else {
-          ribbon.lineTo(sx, sy);
-        }
-      }
-      ribbon.stroke({ width: 3, color: COLORS.ribbon, alpha: 0.9 });
-
-      // Pitch dot at the most recent sample that has a valid step.
-      for (let i = buf.length - 1; i >= 0; i -= 1) {
-        const sample = buf[i];
-        if (!Number.isFinite(sample.step)) continue;
-        const sx = hx + ((sample.t - timeMs) / beatMs) * STAFF.pixelsPerBeat;
-        const sy = diatonicToY(sample.step);
-        ribbon
-          .circle(sx, sy, 5)
-          .fill({ color: COLORS.ribbon, alpha: 0.95 })
-          .stroke({ width: 1.5, color: 0x000000, alpha: 0.35 });
-        break;
-      }
-    }
   }
 
   return (

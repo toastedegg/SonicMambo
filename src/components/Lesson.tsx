@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { LessonStaffPixi, type LessonStaffFlash } from './LessonStaffPixi';
+import { LessonStaffPixi } from './LessonStaffPixi';
 import { useAudioEngine } from '../hooks/useAudioEngine';
 import type { AudioFeedback } from './BottomBar';
 import type { Lesson as LessonType, LessonTimelineNote, LessonNoteStatus } from '../types/lesson';
@@ -21,7 +21,6 @@ export function Lesson({ lesson, onAudioUpdate }: LessonProps) {
   const currentTimeRef = useRef<number>(0);
   const noteStatusRef = useRef<Record<string, LessonNoteStatus>>({});
   const accumulatorsRef = useRef<Map<string, { matchFrames: number; totalFrames: number }>>(new Map());
-  const flashRef = useRef<LessonStaffFlash>({ status: null, token: 0 });
   const activeTargetLabelRef = useRef<string | null>(null);
 
   const beatMs = 60_000 / lesson.tempoBpm;
@@ -51,7 +50,6 @@ export function Lesson({ lesson, onAudioUpdate }: LessonProps) {
     await start();
     accumulatorsRef.current = new Map();
     noteStatusRef.current = {};
-    flashRef.current = { status: null, token: 0 };
     activeTargetLabelRef.current = null;
     setLessonNotes(timelineNotes);
     setActiveTargetLabel(null);
@@ -122,10 +120,6 @@ export function Lesson({ lesson, onAudioUpdate }: LessonProps) {
           const finalStatus: LessonNoteStatus = ratio >= SCORING.hitRatio ? 'hit' : 'miss';
           statuses[note.id] = finalStatus;
           statusChanged = true;
-          flashRef.current = {
-            status: finalStatus,
-            token: flashRef.current.token + 1,
-          };
           if (finalStatus === 'hit') newHits += 1;
           else newMisses += 1;
         }
@@ -205,11 +199,9 @@ export function Lesson({ lesson, onAudioUpdate }: LessonProps) {
 
       <LessonStaffPixi
         notes={lessonNotes.length > 0 ? lessonNotes : timelineNotes}
-        beatMs={beatMs}
         currentTimeRef={currentTimeRef}
         detectionRef={detectionRef}
         noteStatusRef={noteStatusRef}
-        flashRef={flashRef}
       />
 
       {error && (

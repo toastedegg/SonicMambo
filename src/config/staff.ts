@@ -1,27 +1,22 @@
 /**
- * Tuning constants for the scrolling staff engine and lesson scoring.
+ * Tuning constants for the static staff layout and lesson scoring.
  * Keep all feel/responsiveness knobs here so they can be adjusted in one place.
  */
 
 export const STAFF = {
-  /** Horizontal distance (px) representing one beat in the scrolling view. */
-  pixelsPerBeat: 160,
-  /** Fraction of the viewport width at which the fixed hit line sits. */
-  hitLineFraction: 0.3,
   /** Vertical gap between adjacent staff lines (px). Diatonic step = half of this. */
   lineGap: 14,
   /** Staff top line y (px), measured from the top of the canvas. */
   topLineY: 80,
-  /** How many beats of lead-in are shown before the first note reaches the hit line. */
-  leadInBeats: 1.5,
-  /** How many beats of trailing "past" view to keep visible after the hit line. */
-  trailBeats: 0.5,
-  /** Maximum pitch samples kept for the ribbon (~2s at 60fps). */
-  ribbonBufferSize: 160,
-  /** How long (ms) a sample stays visible in the ribbon before being dropped. */
-  ribbonWindowMs: 2500,
-  /** Flash duration (ms) on hit/miss events at the hit line. */
-  flashDurationMs: 360,
+  /** Reserved area at the left for the brace / clef marker. */
+  clefWidth: 48,
+  /** Horizontal breathing room at the left (after the clef) and right of the note row. */
+  leftPadding: 28,
+  rightPadding: 28,
+  /** Lower bound on per-note slot width when notes compress into a narrow viewport. */
+  minSlotWidth: 60,
+  /** Duration (ms) of the local pulse animation when a note finalizes as hit or miss. */
+  activePulseDurationMs: 420,
 } as const;
 
 export const SCORING = {
