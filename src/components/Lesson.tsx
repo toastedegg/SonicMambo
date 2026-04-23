@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { LessonStaffPixi } from './LessonStaffPixi';
 import { useAudioEngine } from '../hooks/useAudioEngine';
 import type { AudioFeedback } from './BottomBar';
-import type { Lesson as LessonType, LessonTimelineNote, LessonNoteStatus } from '../types/lesson';
+import type { Lesson as LessonType, LessonNoteStatus, LessonTimelineNote } from '../types/lesson';
 import { SCORING } from '../config/staff';
 
 interface LessonProps {
@@ -13,7 +13,6 @@ interface LessonProps {
 export function Lesson({ lesson, onAudioUpdate }: LessonProps) {
   const { isListening, currentNote, frequency, loudness, error, detectionRef, start, stop } = useAudioEngine();
   const [isLessonRunning, setIsLessonRunning] = useState(false);
-  const [lessonNotes, setLessonNotes] = useState<LessonTimelineNote[]>([]);
   const [activeTargetLabel, setActiveTargetLabel] = useState<string | null>(null);
   const [stats, setStats] = useState({ hits: 0, misses: 0 });
 
@@ -51,7 +50,6 @@ export function Lesson({ lesson, onAudioUpdate }: LessonProps) {
     accumulatorsRef.current = new Map();
     noteStatusRef.current = {};
     activeTargetLabelRef.current = null;
-    setLessonNotes(timelineNotes);
     setActiveTargetLabel(null);
     setStats({ hits: 0, misses: 0 });
     currentTimeRef.current = 0;
@@ -126,13 +124,6 @@ export function Lesson({ lesson, onAudioUpdate }: LessonProps) {
       }
 
       if (statusChanged) {
-        setLessonNotes((prev) =>
-          prev.map((note) => {
-            const next = statuses[note.id];
-            if (!next || next === note.status) return note;
-            return { ...note, status: next };
-          })
-        );
         setStats({ hits: newHits, misses: newMisses });
       }
 
@@ -198,7 +189,7 @@ export function Lesson({ lesson, onAudioUpdate }: LessonProps) {
       </section>
 
       <LessonStaffPixi
-        notes={lessonNotes.length > 0 ? lessonNotes : timelineNotes}
+        notes={timelineNotes}
         currentTimeRef={currentTimeRef}
         detectionRef={detectionRef}
         noteStatusRef={noteStatusRef}

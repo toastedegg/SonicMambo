@@ -65,7 +65,10 @@ function shapeForDuration(durationBeats: number): NoteShape {
 
 interface NoteVisual {
   note: LessonTimelineNote;
+  /** Outer container: positioned at (slotX, headY). Never scaled. */
   container: Container;
+  /** Inner container holding head/stem/ledger. Scales around its own origin = head center. */
+  glyph: Container;
   head: Graphics;
   stem: Graphics;
   ledger: Graphics;
@@ -94,6 +97,8 @@ export function LessonStaffPixi({
 
   const noteVisualsRef = useRef<Map<string, NoteVisual>>(new Map());
   const viewportRef = useRef<{ width: number; height: number }>({ width: 760, height });
+  /** Cached id-set signature of the last rebuilt note set, for rebuild-guarding. */
+  const lastNoteIdsRef = useRef<string>('');
 
   // -------- Setup Pixi app once --------
   useEffect(() => {
@@ -138,6 +143,7 @@ export function LessonStaffPixi({
 
       drawStaticLayers();
       rebuildNoteVisuals();
+      lastNoteIdsRef.current = notes.map((n) => n.id).join('|');
       app.ticker.add(tick);
     };
 
@@ -180,9 +186,12 @@ export function LessonStaffPixi({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [height]);
 
-  // -------- Rebuild note visuals when `notes` identity changes --------
+  // -------- Rebuild note visuals only when the note id-set actually changes --------
   useEffect(() => {
     if (!appRef.current) return;
+    const idKey = notes.map((n) => n.id).join('|');
+    if (idKey === lastNoteIdsRef.current) return;
+    lastNoteIdsRef.current = idKey;
     rebuildNoteVisuals();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [notes]);
@@ -258,18 +267,31 @@ export function LessonStaffPixi({
     noteVisualsRef.current.clear();
     layer.removeChildren();
 
+    const seededStatuses = noteStatusRef.current;
+
     notes.forEach((note, index) => {
+      const step = labelToDiatonic(note.label);
+      const headY = diatonicToY(step);
+
+      // Outer container: translates to the note's slot. Never scaled.
       const container = new Container();
       container.x = slotX(index);
       container.y = 0;
+
+      // Inner glyph container: positioned at (0, headY) so that its local origin
+      // coincides with the note head's visual center. Scaling this container
+      // bounces the head in-place, never translating it vertically.
+      const glyph = new Container();
+      glyph.x = 0;
+      glyph.y = headY;
 
       const ledger = new Graphics();
       const head = new Graphics();
       const stem = new Graphics();
 
-      container.addChild(ledger);
-      container.addChild(head);
-      container.addChild(stem);
+      glyph.addChild(ledger);
+      glyph.addChild(head);
+      glyph.addChild(stem);
 
       const label = new Text({
         text: note.label,
@@ -282,18 +304,25 @@ export function LessonStaffPixi({
       });
       label.x = -label.width / 2;
       label.y = staffBottomY() + 10;
-      container.addChild(label);
 
+      // Label lives on the outer container so it never scales with the pulse.
+      container.addChild(glyph);
+      container.addChild(label);
       layer.addChild(container);
+
+      // Seed last-* from the authoritative status ref so already-finalized notes
+      // don't re-pulse just because the visuals were (re)built.
+      const seededStatus: LessonNoteStatus = seededStatuses[note.id] ?? 'pending';
 
       const visual: NoteVisual = {
         note,
         container,
+        glyph,
         head,
         stem,
         ledger,
         anchorX: container.x,
-        lastStatus: 'pending',
+        lastStatus: seededStatus,
         lastActive: false,
         lastMatching: false,
         pulseStartedAt: null,
@@ -301,7 +330,7 @@ export function LessonStaffPixi({
       };
 
       drawLedgerLines(visual);
-      drawNoteHead(visual, 'pending', false, false);
+      drawNoteHead(visual, seededStatus, false, false);
       noteVisualsRef.current.set(note.id, visual);
     });
   }
@@ -320,25 +349,27 @@ export function LessonStaffPixi({
     });
   }
 
+  /** Ledger lines are drawn in glyph-local coords: y=0 is the head, each step is stepHeightPx. */
   function drawLedgerLines(v: NoteVisual) {
     const step = labelToDiatonic(v.note.label);
     const ledger = v.ledger;
     ledger.clear();
     const w = 14;
+    const stepH = stepHeightPx();
     if (step < BOTTOM_LINE) {
       for (let lp = BOTTOM_LINE - 2; lp >= step; lp -= 2) {
-        const ly = diatonicToY(lp);
+        const dy = (step - lp) * stepH; // positive: draw below the head (lp below head)
         ledger
-          .moveTo(-w, ly)
-          .lineTo(w, ly)
+          .moveTo(-w, dy)
+          .lineTo(w, dy)
           .stroke({ width: 1.5, color: COLORS.staff, alpha: 0.95 });
       }
     } else if (step > TOP_LINE) {
       for (let lp = TOP_LINE + 2; lp <= step; lp += 2) {
-        const ly = diatonicToY(lp);
+        const dy = (step - lp) * stepH; // negative: draw above the head
         ledger
-          .moveTo(-w, ly)
-          .lineTo(w, ly)
+          .moveTo(-w, dy)
+          .lineTo(w, dy)
           .stroke({ width: 1.5, color: COLORS.staff, alpha: 0.95 });
       }
     }
@@ -352,28 +383,28 @@ export function LessonStaffPixi({
     return COLORS.pending;
   }
 
+  /** Head and stem are drawn in glyph-local coords: y=0 is the head center. */
   function drawNoteHead(v: NoteVisual, status: LessonNoteStatus, active: boolean, matching: boolean) {
     const step = labelToDiatonic(v.note.label);
-    const y = diatonicToY(step);
     const shape = shapeForDuration(v.note.durationBeats);
     const color = headColor(status, active, matching);
 
     v.head.clear();
     if (shape === 'quarter') {
       v.head
-        .ellipse(0, y, 9, 6.5)
+        .ellipse(0, 0, 9, 6.5)
         .fill({ color })
         .stroke({ width: 1.2, color: 0x000000, alpha: 0.4 });
     } else {
       // Half and whole use a hollow oval.
       v.head
-        .ellipse(0, y, 9.5, 6.8)
+        .ellipse(0, 0, 9.5, 6.8)
         .fill({ color: 0x0b0f16, alpha: 1 })
         .stroke({ width: 2.2, color });
     }
     if (active && status === 'pending') {
       v.head
-        .ellipse(0, y, 13, 9.5)
+        .ellipse(0, 0, 13, 9.5)
         .stroke({ width: 1.5, color, alpha: 0.7 });
     }
 
@@ -384,13 +415,13 @@ export function LessonStaffPixi({
     if (shape !== 'whole') {
       if (step < middleLine) {
         v.stem
-          .moveTo(9, y)
-          .lineTo(9, y - 28)
+          .moveTo(9, 0)
+          .lineTo(9, -28)
           .stroke({ width: 1.8, color });
       } else {
         v.stem
-          .moveTo(-9, y)
-          .lineTo(-9, y + 28)
+          .moveTo(-9, 0)
+          .lineTo(-9, 28)
           .stroke({ width: 1.8, color });
       }
     }
@@ -429,22 +460,24 @@ export function LessonStaffPixi({
       }
 
       // Per-note pulse: local scale bounce on hit, local alpha dim on miss.
+      // We animate the inner `glyph` (origin at head center) so the bounce is
+      // strictly in-place. The outer container never moves or scales.
       if (v.pulseStartedAt != null && v.pulseKind != null) {
         const progress = (now - v.pulseStartedAt) / STAFF.activePulseDurationMs;
         if (progress >= 1) {
           v.pulseStartedAt = null;
           v.pulseKind = null;
-          v.container.scale.set(1);
-          v.container.alpha = 1;
+          v.glyph.scale.set(1);
+          v.glyph.alpha = 1;
         } else {
           const wave = Math.sin(progress * Math.PI); // 0 -> 1 -> 0
           if (v.pulseKind === 'hit') {
             const scale = 1 + 0.22 * wave;
-            v.container.scale.set(scale);
-            v.container.alpha = 1;
+            v.glyph.scale.set(scale);
+            v.glyph.alpha = 1;
           } else {
-            v.container.scale.set(1);
-            v.container.alpha = 1 - 0.4 * wave;
+            v.glyph.scale.set(1);
+            v.glyph.alpha = 1 - 0.4 * wave;
           }
         }
       }
