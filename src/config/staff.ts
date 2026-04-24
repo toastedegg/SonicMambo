@@ -26,6 +26,15 @@ export const SCORING = {
   toleranceBeats: 0.25,
 } as const;
 
+export const LESSON = {
+  /** Countdown seconds shown before lesson scoring begins. */
+  countdownSeconds: 3,
+  /** Note sequence (labels) that starts a lesson when played in order on the guitar. */
+  guitarStartSequence: ['E3', 'G3', 'C4'] as readonly string[],
+  /** Max gap (ms) between consecutive notes in the start sequence before it resets. */
+  guitarStartSequenceGapMs: 2000,
+} as const;
+
 export const AUDIO = {
   /** EMA smoothing factor for frequency (0..1). Higher = more responsive, less smooth. */
   frequencyEmaAlpha: 0.3,
