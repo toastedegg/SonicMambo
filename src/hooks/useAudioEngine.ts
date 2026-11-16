@@ -200,6 +200,7 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): UseAudioEng
   const rawCaptureRef = useRef<boolean>(false);
   const inputGatedRef = useRef<boolean>(false);
   const isListeningRef = useRef<boolean>(false);
+  const startingPromiseRef = useRef<Promise<void> | null>(null);
 
   const audioContextRef = useRef<AudioContext | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -431,6 +432,7 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): UseAudioEng
 
   const stop = useCallback(() => {
     isListeningRef.current = false;
+    startingPromiseRef.current = null;
 
     if (watchdogTimerRef.current) {
       window.clearTimeout(watchdogTimerRef.current);
@@ -525,14 +527,19 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): UseAudioEng
 
   const start = useCallback(
     async (overrideDeviceId?: string) => {
-      stop();
+      if (startingPromiseRef.current && typeof overrideDeviceId !== 'string') {
+        return startingPromiseRef.current;
+      }
 
-      const desiredDeviceId =
-        typeof overrideDeviceId === 'string' ? overrideDeviceId : selectedDeviceIdRef.current;
+      const runStart = async () => {
+        stop();
 
-      try {
-        const audioContext = new AudioContext({ latencyHint: 'interactive' });
-        audioContextRef.current = audioContext;
+        const desiredDeviceId =
+          typeof overrideDeviceId === 'string' ? overrideDeviceId : selectedDeviceIdRef.current;
+
+        try {
+          const audioContext = new AudioContext();
+          audioContextRef.current = audioContext;
         const resumePromise =
           audioContext.state === 'suspended'
             ? audioContext.resume().catch(() => {})
@@ -749,7 +756,14 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): UseAudioEng
           isListening: false,
           error: message,
         }));
+      } finally {
+        startingPromiseRef.current = null;
       }
+      };
+
+      const p = runStart();
+      startingPromiseRef.current = p;
+      return p;
     },
     [handlePipelineFrame, handlePipelineNoteEvent, refreshDevices, startMultiChannelFallback, stop],
   );
