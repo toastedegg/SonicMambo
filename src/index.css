@@ -52,7 +52,7 @@ body {
   }
 
   .sp-main-gradient {
-    @apply h-full rounded-lg bg-gradient-to-b from-sp-elevated/60 to-sp-black;
+    @apply min-h-full rounded-lg bg-gradient-to-b from-sp-elevated/60 to-sp-black;
   }
 
   /* Cards & panels */

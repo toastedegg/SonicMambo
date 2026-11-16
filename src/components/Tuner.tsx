@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
+import { soundGenerator } from '../audio/backingTrackEngine';
+import { centsBetween } from '../utils/noteFromFrequency';
 
 interface TunerProps {
   isListening: boolean;
@@ -27,10 +29,6 @@ const GUITAR_STRINGS: GuitarString[] = [
 const ACTIVE_CENTS_WINDOW = 60;
 const IN_TUNE_CENTS = 5;
 const IN_TUNE_HOLD_MS = 250;
-
-function centsBetween(detected: number, target: number): number {
-  return 1200 * Math.log2(detected / target);
-}
 
 export function Tuner({ isListening, smoothedFrequency }: TunerProps) {
   const active = useMemo(() => {
@@ -80,7 +78,7 @@ export function Tuner({ isListening, smoothedFrequency }: TunerProps) {
         <div>
           <h3 className="sp-heading-md">Tune your guitar</h3>
           <p className="text-sm text-sp-text-sub mt-0.5">
-            Play each string open. The pill lights up when you're close, and confirms once you're within &plusmn;{IN_TUNE_CENTS} cents.
+            Play each string open (or click any string card to hear its reference pitch). Confirms within &plusmn;{IN_TUNE_CENTS} cents.
           </p>
         </div>
         {allTuned && (
@@ -107,6 +105,7 @@ export function Tuner({ isListening, smoothedFrequency }: TunerProps) {
               active={isActive}
               cents={cents}
               tuned={tuned}
+              onPlayTone={() => soundGenerator.playReferenceNote(string.hz)}
             />
           );
         })}
@@ -134,9 +133,10 @@ interface StringPillProps {
   active: boolean;
   cents: number | null;
   tuned: boolean;
+  onPlayTone: () => void;
 }
 
-function StringPill({ name, label, hz, active, cents, tuned }: StringPillProps) {
+function StringPill({ name, label, hz, active, cents, tuned, onPlayTone }: StringPillProps) {
   const borderClass = active
     ? Math.abs(cents ?? 99) < IN_TUNE_CENTS
       ? 'border-sp-green ring-2 ring-sp-green/40'
@@ -154,8 +154,11 @@ function StringPill({ name, label, hz, active, cents, tuned }: StringPillProps) 
       : 'bg-sp-elevated';
 
   return (
-    <div
-      className={`relative flex flex-col items-center justify-center rounded-lg p-3 border transition-colors ${borderClass} ${bgClass}`}
+    <button
+      type="button"
+      onClick={onPlayTone}
+      title={`Click to hear ${label} (${hz.toFixed(2)} Hz)`}
+      className={`relative flex flex-col items-center justify-center rounded-lg p-3 border transition-colors hover:border-white/30 ${borderClass} ${bgClass}`}
     >
       {tuned && (
         <span className="absolute top-1.5 right-1.5 text-sp-green">
@@ -169,6 +172,7 @@ function StringPill({ name, label, hz, active, cents, tuned }: StringPillProps) 
         {name}
       </div>
       <div className="text-[10px] text-sp-text-muted mt-0.5">{hz.toFixed(2)} Hz</div>
+      <div className="text-[9px] font-bold text-sp-green/80 mt-1">Tap to hear</div>
       {active && cents != null && (
         <div
           className={`text-xs font-bold mt-1 ${
@@ -183,7 +187,7 @@ function StringPill({ name, label, hz, active, cents, tuned }: StringPillProps) 
           {cents.toFixed(0)} cents
         </div>
       )}
-    </div>
+    </button>
   );
 }
 

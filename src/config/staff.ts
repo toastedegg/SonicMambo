@@ -20,9 +20,23 @@ export const STAFF = {
 } as const;
 
 export const SCORING = {
-  /** Minimum ratio of matching frames inside the scoring window to register a hit. */
+  /** Max absolute cents deviation (after session tuning offset) to count as matching. */
+  matchCentsTolerance: 50,
+  /** Target steady hold time (ms) within cents tolerance to register a hit on medium/long notes. */
+  holdDurationMs: 90,
+  /** Fraction of note duration required for very fast notes (e.g. 16th notes at 112+ BPM). */
+  minHoldDurationRatio: 0.28,
+  /** Absolute floor on required hold duration (ms) for rapid 16th/32nd passages. */
+  minHoldFloorMs: 28,
+  /** Short dropout grace period (ms) bridging vibrato peaks or pick scrapes without resetting streak. */
+  dropoutGraceMs: 42,
+  /** Early window padding in beats (clamped to 140 ms max). */
+  earlyToleranceBeats: 0.25,
+  /** Late window padding in beats (clamped to 210 ms max). */
+  lateToleranceBeats: 0.35,
+  /** Legacy frame-ratio constant kept only for M0 benchmark comparisons. */
   hitRatio: 0.5,
-  /** Tolerance around each note's time window, in beats. Allows slight early/late. */
+  /** Legacy beat tolerance constant kept only for M0 benchmark comparisons. */
   toleranceBeats: 0.25,
 } as const;
 
@@ -36,12 +50,16 @@ export const LESSON = {
 } as const;
 
 export const AUDIO = {
-  /** EMA smoothing factor for frequency (0..1). Higher = more responsive, less smooth. */
-  frequencyEmaAlpha: 0.3,
-  /** Minimum pitch confidence to accept a detection. */
-  minConfidence: 0.5,
-  /** Number of consecutive stable frames required before changing the reported label. */
-  labelStabilityFrames: 3,
+  /** Window length (frames) for median pitch smoothing in semitones. */
+  medianWindowFrames: 3,
+  /** Pitch jump threshold (semitones) that triggers filter reset once confirmed (2 frames). */
+  jumpResetSemitones: 0.85,
+  /** Minimum pitch clarity/confidence (0..1) to accept a detection. */
+  minConfidence: 0.58,
   /** Hold the last good pitch this long (ms) before declaring silence, to ride out dropouts. */
-  pitchHoldMs: 150,
+  pitchHoldMs: 95,
+  /** Throttle interval (ms) for React loudness/frequency meter state (~15 Hz). */
+  meterUpdateIntervalMs: 66,
+  /** High-pass cutoff frequency (Hz) removing DC offset, handling thump, and 50/60 Hz hum. */
+  highPassCutoffHz: 60,
 } as const;

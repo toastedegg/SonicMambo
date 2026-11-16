@@ -29,3 +29,21 @@ pnpm-debug.log*
 *.tsbuildinfo
 *.local
 Thumbs.db
+
+# Agent & Local Tooling
+.pi/
+.claude/
+.cursor/
+
+# Local Execution Plans & Design Docs
+EXECUTION_PLAN.md
+execution.MD
+sonicmambo_vision_and_roadmap.md
+
+# Local Test Suite, Datasets, Eval Scripts & Screenshots
+tests/
+scripts/
+traninig_set/
+training_set/
+reports/
+screenshots/

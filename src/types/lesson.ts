@@ -13,6 +13,15 @@ export interface LessonTimelineNote extends LessonNoteDefinition {
   status: LessonNoteStatus;
 }
 
+export interface NoteAttemptResult {
+  noteId: string;
+  targetLabel: string;
+  status: LessonNoteStatus;
+  timingOffsetMs: number | null; // negative = early/rushed, positive = late/dragged
+  meanCents: number | null; // negative = flat, positive = sharp
+  holdDurationMs: number;
+}
+
 export interface Lesson {
   id: string;
   title: string;

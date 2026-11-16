@@ -1,0 +1,16 @@
+{
+  "name": "SonicMambo – Ear training for guitarists",
+  "short_name": "SonicMambo",
+  "description": "Real-time browser pitch & onset guitar ear training, seeded practice courses, and jazz improvisation coach.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#121212",
+  "theme_color": "#1DB954",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml"
+    }
+  ]
+}
