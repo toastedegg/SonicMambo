@@ -1,4 +1,5 @@
 import { createContext, useContext, useMemo, type ReactNode } from 'react';
+import type { AsioBridgeStatus } from '../audio/asioBridgeClient';
 import type { AmpSettings } from '../audio/guitarAmpRig';
 import {
   useAudioEngine,
@@ -27,6 +28,7 @@ export interface AudioEngineControl {
   detectedChannelCount: number;
   activeChannelIndex: number;
   ampSettings: AmpSettings;
+  asioStatus: AsioBridgeStatus;
   error: string | null;
   detectionRef: React.MutableRefObject<DetectionSnapshot>;
   start: (overrideDeviceId?: string) => Promise<void>;
@@ -35,6 +37,10 @@ export interface AudioEngineControl {
   setSelectedDeviceId: (deviceId: string) => Promise<void>;
   setChannelSelection: (channel: InputChannelSelection) => void;
   updateAmpSettings: (partial: Partial<AmpSettings>) => Promise<void>;
+  probeAsioBridge: () => Promise<boolean>;
+  selectAsioDriver: (driverName: string) => void;
+  setAsioBufferSize: (bufferSize: number) => void;
+  openAsioControlPanel: () => void;
   setRmsThreshold: (threshold: number) => void;
   resetNoiseCalibration: () => void;
   setInputGated: (gated: boolean) => void;
@@ -62,6 +68,7 @@ export function AudioEngineProvider({ children }: { children: ReactNode }) {
       detectedChannelCount: engine.detectedChannelCount,
       activeChannelIndex: engine.activeChannelIndex,
       ampSettings: engine.ampSettings,
+      asioStatus: engine.asioStatus,
       error: engine.error,
       detectionRef: engine.detectionRef,
       start: engine.start,
@@ -70,6 +77,10 @@ export function AudioEngineProvider({ children }: { children: ReactNode }) {
       setSelectedDeviceId: engine.setSelectedDeviceId,
       setChannelSelection: engine.setChannelSelection,
       updateAmpSettings: engine.updateAmpSettings,
+      probeAsioBridge: engine.probeAsioBridge,
+      selectAsioDriver: engine.selectAsioDriver,
+      setAsioBufferSize: engine.setAsioBufferSize,
+      openAsioControlPanel: engine.openAsioControlPanel,
       setRmsThreshold: engine.setRmsThreshold,
       resetNoiseCalibration: engine.resetNoiseCalibration,
       setInputGated: engine.setInputGated,
@@ -89,6 +100,7 @@ export function AudioEngineProvider({ children }: { children: ReactNode }) {
       engine.detectedChannelCount,
       engine.activeChannelIndex,
       engine.ampSettings,
+      engine.asioStatus,
       engine.error,
       engine.detectionRef,
       engine.start,
@@ -97,6 +109,10 @@ export function AudioEngineProvider({ children }: { children: ReactNode }) {
       engine.setSelectedDeviceId,
       engine.setChannelSelection,
       engine.updateAmpSettings,
+      engine.probeAsioBridge,
+      engine.selectAsioDriver,
+      engine.setAsioBufferSize,
+      engine.openAsioControlPanel,
       engine.setRmsThreshold,
       engine.resetNoiseCalibration,
       engine.setInputGated,

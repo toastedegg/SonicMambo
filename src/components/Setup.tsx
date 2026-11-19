@@ -44,6 +44,7 @@ export function Setup({ onReachedScrollEnd }: SetupProps) {
     detectedChannelCount,
     activeChannelIndex,
     ampSettings,
+    asioStatus,
     detectionRef,
     start,
     stop,
@@ -51,6 +52,10 @@ export function Setup({ onReachedScrollEnd }: SetupProps) {
     setSelectedDeviceId,
     setChannelSelection,
     updateAmpSettings,
+    probeAsioBridge,
+    selectAsioDriver,
+    setAsioBufferSize,
+    openAsioControlPanel,
     setRmsThreshold,
     resetNoiseCalibration,
     subscribeNoteEvents,
@@ -138,6 +143,107 @@ export function Setup({ onReachedScrollEnd }: SetupProps) {
           (Channel 1 or Channel 2), calibrate room noise, and tune up.
         </p>
       </header>
+
+      {/* Native Local ASIO Ultra-Low-Latency Bridge Panel */}
+      <section
+        className={`rounded-2xl border p-5 mb-8 space-y-4 ${
+          asioStatus.asioConnected
+            ? 'bg-sky-950/25 border-sky-400/40'
+            : 'bg-sp-base border-white/10'
+        }`}
+      >
+        <div className="flex items-start justify-between gap-4 flex-wrap">
+          <div>
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-extrabold uppercase tracking-widest text-sky-400">
+                &#9889; Native ASIO Desktop Bridge
+              </span>
+              {asioStatus.asioConnected ? (
+                <span className="px-2.5 py-0.5 rounded-full bg-sky-400/20 text-sky-300 text-[11px] font-extrabold tabular-nums">
+                  {asioStatus.driverName} &middot; {asioStatus.latencyMs.toFixed(1)} ms RTL
+                </span>
+              ) : (
+                <span className="px-2 py-0.5 rounded-full bg-white/8 text-sp-text-muted text-[11px] font-semibold">
+                  Not Connected (Using Browser WebAudio)
+                </span>
+              )}
+            </div>
+            <p className="text-xs text-sp-text-sub mt-1 max-w-2xl">
+              {asioStatus.asioConnected
+                ? `Hardware DMA active at ${asioStatus.sampleRate} Hz (${asioStatus.bufferSize} samples). Guitar Amp, Drums, and Pitch Tracking are running natively with BIAS-FX-grade latency.`
+                : 'For ~5–8 ms hardware ASIO guitar amp monitoring on Windows, start the local companion in a terminal with "npm run bridge" — Chrome connects automatically.'}
+            </p>
+            {asioStatus.error && (
+              <p className="text-xs text-amber-300 mt-1">{asioStatus.error}</p>
+            )}
+          </div>
+
+          <div className="flex items-center gap-2">
+            {asioStatus.asioConnected && (
+              <button
+                type="button"
+                onClick={openAsioControlPanel}
+                className="sp-btn-secondary text-xs"
+              >
+                ASIO Control Panel
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => void probeAsioBridge()}
+              className="sp-btn-secondary text-xs"
+            >
+              {asioStatus.bridgeReachable ? 'Refresh ASIO' : 'Check ASIO Bridge'}
+            </button>
+          </div>
+        </div>
+
+        {asioStatus.bridgeReachable && (
+          <div className="grid gap-4 sm:grid-cols-2 pt-3 border-t border-white/10 text-xs">
+            <div>
+              <label className="block text-[10px] font-bold uppercase tracking-widest text-sp-text-muted mb-1.5">
+                ASIO Driver
+              </label>
+              <select
+                value={asioStatus.driverName}
+                onChange={(e) => selectAsioDriver(e.target.value)}
+                className="w-full bg-sp-elevated text-white font-semibold px-3 py-2 rounded-lg border border-white/15 focus:outline-none"
+              >
+                {asioStatus.availableDrivers.map((d) => (
+                  <option key={d} value={d}>
+                    {d}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-[10px] font-bold uppercase tracking-widest text-sp-text-muted mb-1.5">
+                ASIO Hardware Buffer Size
+              </label>
+              <div className="flex items-center gap-1.5 flex-wrap">
+                {[32, 48, 64, 128, 256].map((sz) => {
+                  const active = asioStatus.bufferSize === sz;
+                  return (
+                    <button
+                      key={sz}
+                      type="button"
+                      onClick={() => setAsioBufferSize(sz)}
+                      className={`px-3 py-1.5 rounded-lg font-bold border transition-colors ${
+                        active
+                          ? 'bg-sky-400 text-black border-sky-400'
+                          : 'bg-sp-elevated text-sp-text-sub border-white/10 hover:text-white'
+                      }`}
+                    >
+                      {sz} smp
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        )}
+      </section>
 
       <StepHeader number={1} title="Choose how you&rsquo;re connecting" />
       <div className="grid gap-3 md:grid-cols-2 mb-8">

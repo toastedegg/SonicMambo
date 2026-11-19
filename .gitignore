@@ -47,3 +47,7 @@ traninig_set/
 training_set/
 reports/
 screenshots/
+
+# Native ASIO Bridge Build Artifacts
+bridge/bin/
+bridge/obj/

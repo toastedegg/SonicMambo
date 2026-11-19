@@ -5,6 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "bridge": "dotnet run --project bridge -c Release",
+    "bridge:build": "dotnet build bridge -c Release",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "test": "node --test \"tests/**/*.test.ts\"",

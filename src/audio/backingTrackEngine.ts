@@ -1,4 +1,5 @@
 import { noteLabelToFrequency } from '../utils/noteFromFrequency.ts';
+import { asioBridgeClient } from './asioBridgeClient.ts';
 
 export type GrooveStyleId =
   | 'blues-shuffle'
@@ -81,11 +82,21 @@ class SoundGeneratorEngine {
   }
 
   getContext(): AudioContext | null {
+    if (asioBridgeClient.isAsioActive()) return null;
     return this.ensureContext();
+  }
+
+  getClockSec(): number {
+    if (asioBridgeClient.isAsioActive()) {
+      return performance.now() / 1000;
+    }
+    const ctx = this.ensureContext();
+    return ctx ? ctx.currentTime : performance.now() / 1000;
   }
 
   setVolume(vol: number): void {
     this.masterVolume = Math.max(0, Math.min(1, vol));
+    asioBridgeClient.sendConfig({ mixVolume: this.masterVolume });
     if (this.masterGain && this.ctx) {
       this.masterGain.gain.setTargetAtTime(this.masterVolume, this.ctx.currentTime, 0.015);
     }
@@ -97,6 +108,11 @@ class SoundGeneratorEngine {
 
   /** Studio punchy kick drum (sweeps 155 Hz -> 46 Hz rapidly — below 70 Hz guitar floor). */
   scheduleKick(when: number, velocity: number = 0.9): void {
+    if (asioBridgeClient.isAsioActive()) {
+      const delayMs = Math.max(0, (when - performance.now() / 1000) * 1000);
+      asioBridgeClient.triggerVoice({ kind: 'kick', delayMs, vel: velocity });
+      return;
+    }
     const ctx = this.ensureContext();
     const dest = this.compressor;
     if (!ctx || !dest) return;
@@ -157,6 +173,11 @@ class SoundGeneratorEngine {
 
   /** Crisp snare drum (body + filtered snare wires). */
   scheduleSnare(when: number, velocity: number = 0.85): void {
+    if (asioBridgeClient.isAsioActive()) {
+      const delayMs = Math.max(0, (when - performance.now() / 1000) * 1000);
+      asioBridgeClient.triggerVoice({ kind: 'snare', delayMs, vel: velocity });
+      return;
+    }
     const ctx = this.ensureContext();
     const dest = this.compressor;
     if (!ctx || !dest) return;
@@ -220,6 +241,15 @@ class SoundGeneratorEngine {
 
   /** Closed or slightly open hi-hat / ride shimmer (> 6.5 kHz unpitched). */
   scheduleHiHat(when: number, velocity: number = 0.55, open: boolean = false): void {
+    if (asioBridgeClient.isAsioActive()) {
+      const delayMs = Math.max(0, (when - performance.now() / 1000) * 1000);
+      asioBridgeClient.triggerVoice({
+        kind: open ? 'hat-open' : 'hat-closed',
+        delayMs,
+        vel: velocity,
+      });
+      return;
+    }
     const ctx = this.ensureContext();
     const dest = this.compressor;
     if (!ctx || !dest || !this.noiseBuffer) return;
@@ -264,6 +294,15 @@ class SoundGeneratorEngine {
 
   /** Crisp studio woodblock / stick click for count-in and metronome mode. */
   scheduleClick(when: number, accented: boolean = false): void {
+    if (asioBridgeClient.isAsioActive()) {
+      const delayMs = Math.max(0, (when - performance.now() / 1000) * 1000);
+      asioBridgeClient.triggerVoice({
+        kind: accented ? 'click-accent' : 'click',
+        delayMs,
+        vel: accented ? 0.95 : 0.75,
+      });
+      return;
+    }
     const ctx = this.ensureContext();
     const dest = this.compressor;
     if (!ctx || !dest) return;
@@ -305,6 +344,20 @@ class SoundGeneratorEngine {
     durationSec: number,
     options: { gainScale?: number; tech?: string } = {},
   ): void {
+    if (asioBridgeClient.isAsioActive()) {
+      const delayMs = Math.max(0, (when - performance.now() / 1000) * 1000);
+      const tech = options.tech ?? '';
+      asioBridgeClient.triggerVoice({
+        kind: 'guitar',
+        delayMs,
+        freqHz: frequencyHz,
+        durSec: durationSec,
+        vel: options.gainScale ?? 1.0,
+        slide: tech.includes('slide'),
+        vibrato: durationSec >= 0.55 || tech.includes('vibrato'),
+      });
+      return;
+    }
     const ctx = this.ensureContext();
     const dest = this.compressor;
     if (!ctx || !dest || !Number.isFinite(frequencyHz) || frequencyHz <= 0) return;
@@ -520,9 +573,8 @@ class SoundGeneratorEngine {
   playReferenceNote(labelOrHz: string | number, durationSec: number = 1.35): void {
     const hz = typeof labelOrHz === 'number' ? labelOrHz : noteLabelToFrequency(labelOrHz);
     if (hz == null) return;
-    const ctx = this.ensureContext();
-    if (!ctx) return;
-    this.scheduleGuitarNote(hz, ctx.currentTime + 0.015, durationSec, {
+    const now = this.getClockSec();
+    this.scheduleGuitarNote(hz, now + 0.015, durationSec, {
       gainScale: 1.0,
       tech: 'vibrato',
     });
@@ -551,7 +603,6 @@ export interface BackingTransportConfig {
 export class BackingTransport {
   private config: BackingTransportConfig;
   private startAudioSec = 0;
-  private startPerfMs = 0;
   private timerId = 0;
   private running = false;
 
@@ -573,10 +624,8 @@ export class BackingTransport {
 
   start(): void {
     this.stop();
-    const ctx = soundGenerator.getContext();
     const leadInSec = 0.05;
-    this.startAudioSec = ctx ? ctx.currentTime + leadInSec : 0;
-    this.startPerfMs = performance.now() + leadInSec * 1000;
+    this.startAudioSec = soundGenerator.getClockSec() + leadInSec;
     this.nextBeatToSchedule = -this.config.countInBeats;
     this.scheduledNotePassKeys.clear();
     this.lastReportedLoopIndex = 0;
@@ -591,6 +640,9 @@ export class BackingTransport {
     if (this.timerId) {
       window.clearInterval(this.timerId);
       this.timerId = 0;
+    }
+    if (asioBridgeClient.isAsioActive()) {
+      asioBridgeClient.clearVoices();
     }
   }
 
@@ -611,10 +663,7 @@ export class BackingTransport {
     elapsedMs: number;
     loopIndex: number;
   } {
-    const ctx = soundGenerator.getContext();
-    const nowElapsedSec = ctx
-      ? ctx.currentTime - this.startAudioSec
-      : (performance.now() - this.startPerfMs) / 1000;
+    const nowElapsedSec = soundGenerator.getClockSec() - this.startAudioSec;
 
     const beatSec = 60 / Math.max(30, this.config.bpm);
     const countInSec = this.config.countInBeats * beatSec;
@@ -662,9 +711,8 @@ export class BackingTransport {
 
   private schedulerTick(): void {
     if (!this.running) return;
-    const ctx = soundGenerator.getContext();
-    const nowSec = ctx ? ctx.currentTime : performance.now() / 1000;
-    const baseSec = ctx ? this.startAudioSec : this.startPerfMs / 1000;
+    const nowSec = soundGenerator.getClockSec();
+    const baseSec = this.startAudioSec;
 
     const beatSec = 60 / Math.max(30, this.config.bpm);
     const countInSec = this.config.countInBeats * beatSec;
@@ -708,7 +756,7 @@ export class BackingTransport {
           const countPos = bIdx + this.config.countInBeats;
           soundGenerator.scheduleClick(beatWhen, countPos === 0);
         }
-      } else if (ctx) {
+      } else {
         const beatInCycle = this.config.loop ? bIdx % cycleBeats : bIdx;
         const beatInBar = beatInCycle % this.config.beatsPerBar;
         soundGenerator.scheduleGrooveBeat(this.config.grooveStyle, beatInBar, beatWhen, beatSec);
@@ -718,7 +766,7 @@ export class BackingTransport {
     }
 
     // Schedule guide/preview guitar notes within lookahead window
-    if (ctx && this.config.guideGuitar !== 'off' && horizonPlayBeats >= -0.05) {
+    if (this.config.guideGuitar !== 'off' && horizonPlayBeats >= -0.05) {
       const gainScale = this.config.guideGuitar === 'full' ? 1.05 : 0.42;
       const minPass = this.config.loop ? Math.max(0, Math.floor(currentPlayBeats / cycleBeats)) : 0;
       const maxPass = this.config.loop ? Math.max(0, Math.floor(horizonPlayBeats / cycleBeats)) : 0;

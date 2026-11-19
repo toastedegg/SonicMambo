@@ -1,6 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import {
+  asioBridgeClient,
+  type AsioBridgeStatus,
+} from '../audio/asioBridgeClient';
+import { soundGenerator } from '../audio/backingTrackEngine';
+import {
   GuitarAmpRig,
   readSavedAmpSettings,
   writeSavedAmpSettings,
@@ -63,6 +68,7 @@ export interface UseAudioEngineReturn extends AudioEngineState {
   detectedChannelCount: number;
   activeChannelIndex: number;
   ampSettings: AmpSettings;
+  asioStatus: AsioBridgeStatus;
   detectionRef: React.MutableRefObject<DetectionSnapshot>;
   start: (overrideDeviceId?: string) => Promise<void>;
   stop: () => void;
@@ -70,6 +76,10 @@ export interface UseAudioEngineReturn extends AudioEngineState {
   setSelectedDeviceId: (deviceId: string) => Promise<void>;
   setChannelSelection: (channel: InputChannelSelection) => void;
   updateAmpSettings: (partial: Partial<AmpSettings>) => Promise<void>;
+  probeAsioBridge: () => Promise<boolean>;
+  selectAsioDriver: (driverName: string) => void;
+  setAsioBufferSize: (bufferSize: number) => void;
+  openAsioControlPanel: () => void;
   setRmsThreshold: (threshold: number) => void;
   resetNoiseCalibration: () => void;
   setDetectorBackend: (backend: DetectorBackendKind) => void;
@@ -190,6 +200,9 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): UseAudioEng
   const [activeChannelIndex, setActiveChannelIndex] = useState<number>(0);
   const [ampSettings, setAmpSettingsState] = useState<AmpSettings>(() =>
     readSavedAmpSettings(),
+  );
+  const [asioStatus, setAsioStatus] = useState<AsioBridgeStatus>(() =>
+    asioBridgeClient.getStatus(),
   );
 
   const rmsThresholdRef = useRef<number>(initialThreshold);
@@ -527,6 +540,25 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): UseAudioEng
 
   const start = useCallback(
     async (overrideDeviceId?: string) => {
+      if (asioBridgeClient.isAsioActive()) {
+        isListeningRef.current = true;
+        const st = asioBridgeClient.getStatus();
+        setSampleRate(st.sampleRate);
+        setAudioLatencyMs(Math.round(st.latencyMs));
+        setState((s) => ({ ...s, isListening: true, error: null }));
+        asioBridgeClient.sendAmpSettings({
+          ...ampSettingsRef.current,
+          enabled: ampSettingsRef.current.enabled && !inputGatedRef.current,
+        });
+        asioBridgeClient.sendConfig({
+          rmsThreshold: rmsThresholdRef.current,
+          channelMode: String(channelSelectionRef.current),
+          inputGated: inputGatedRef.current,
+          mixVolume: soundGenerator.getVolume(),
+        });
+        return;
+      }
+
       if (startingPromiseRef.current && typeof overrideDeviceId !== 'string') {
         return startingPromiseRef.current;
       }
@@ -784,6 +816,7 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): UseAudioEng
     channelSelectionRef.current = channel;
     setChannelSelectionState(channel);
     writeSavedChannelSelection(channel);
+    asioBridgeClient.sendConfig({ channelMode: String(channel) });
     ampRigRef.current?.setChannelRouting(channel);
     workletNodeRef.current?.port.postMessage({
       type: 'set-channel',
@@ -801,6 +834,15 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): UseAudioEng
       setAmpSettingsState(next);
       writeSavedAmpSettings(next);
 
+      asioBridgeClient.sendAmpSettings({
+        ...next,
+        enabled: next.enabled && !inputGatedRef.current,
+      });
+
+      if (asioBridgeClient.isAsioActive()) {
+        return;
+      }
+
       if (next.enabled && !isListeningRef.current) {
         await start();
         return;
@@ -814,10 +856,27 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): UseAudioEng
     [start],
   );
 
+  const probeAsioBridge = useCallback(async () => {
+    return asioBridgeClient.probeAndConnect();
+  }, []);
+
+  const selectAsioDriver = useCallback((driverName: string) => {
+    asioBridgeClient.selectDriver(driverName);
+  }, []);
+
+  const setAsioBufferSize = useCallback((bufferSize: number) => {
+    asioBridgeClient.setBufferSize(bufferSize);
+  }, []);
+
+  const openAsioControlPanel = useCallback(() => {
+    asioBridgeClient.openControlPanel();
+  }, []);
+
   const setRmsThreshold = useCallback((threshold: number) => {
     const clamped = Math.min(0.08, Math.max(0.002, threshold));
     rmsThresholdRef.current = clamped;
     setRmsThresholdState(clamped);
+    asioBridgeClient.sendConfig({ rmsThreshold: clamped });
     workerRef.current?.postMessage({ type: 'config', rmsThreshold: clamped });
     fallbackPipelineRef.current?.setRmsThreshold(clamped);
   }, []);
@@ -845,6 +904,11 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): UseAudioEng
   const setInputGated = useCallback((gated: boolean) => {
     inputGatedRef.current = gated;
     setIsInputGatedState(gated);
+    asioBridgeClient.sendConfig({ inputGated: gated });
+    asioBridgeClient.sendAmpSettings({
+      ...ampSettingsRef.current,
+      enabled: ampSettingsRef.current.enabled && !gated,
+    });
     ampRigRef.current?.applySettings({
       ...ampSettingsRef.current,
       enabled: ampSettingsRef.current.enabled && !gated,
@@ -862,6 +926,7 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): UseAudioEng
   }, []);
 
   const resetDsp = useCallback(() => {
+    asioBridgeClient.resetDsp();
     workerRef.current?.postMessage({ type: 'reset' });
     fallbackPipelineRef.current?.reset();
     lastReportedLabelRef.current = null;
@@ -889,6 +954,73 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): UseAudioEng
     };
   }, []);
 
+  // Subscribe to Localhost Native ASIO Bridge (auto-discovers ws://127.0.0.1:17420)
+  useEffect(() => {
+    asioBridgeClient.startAutoDiscovery();
+
+    const unsubStatus = asioBridgeClient.subscribeStatus((st) => {
+      setAsioStatus((prev) => {
+        if (
+          prev.bridgeReachable === st.bridgeReachable &&
+          prev.asioConnected === st.asioConnected &&
+          prev.driverName === st.driverName &&
+          prev.bufferSize === st.bufferSize &&
+          prev.latencyMs === st.latencyMs &&
+          prev.error === st.error
+        ) {
+          return prev;
+        }
+        return st;
+      });
+
+      if (st.asioConnected) {
+        // Shut down browser WebAudio capture if it was open so ASIO owns the interface cleanly
+        if (audioContextRef.current) {
+          stop();
+        }
+        isListeningRef.current = true;
+        setSampleRate(st.sampleRate);
+        setAudioLatencyMs(Math.round(st.latencyMs));
+        setDetectedChannelCount(Math.max(1, st.inputChannels));
+        setActiveChannelIndex(st.activeChannel);
+        setState((prev) => ({ ...prev, isListening: true, error: null }));
+
+        asioBridgeClient.sendAmpSettings({
+          ...ampSettingsRef.current,
+          enabled: ampSettingsRef.current.enabled && !inputGatedRef.current,
+        });
+        asioBridgeClient.sendConfig({
+          rmsThreshold: rmsThresholdRef.current,
+          channelMode: String(channelSelectionRef.current),
+          inputGated: inputGatedRef.current,
+          mixVolume: soundGenerator.getVolume(),
+        });
+      }
+    });
+
+    const unsubTelemetry = asioBridgeClient.subscribeTelemetry((pkt) => {
+      setActiveChannelIndex((prev) => (prev === pkt.activeChannel ? prev : pkt.activeChannel));
+      handlePipelineFrame(
+        {
+          timeMs: pkt.timeMs,
+          rms: pkt.rms,
+          rawHz: pkt.rawHz,
+          smoothedHz: pkt.smoothedHz,
+          midi: pkt.midi,
+          centsOffset: pkt.centsOffset,
+          label: pkt.label,
+          confidence: pkt.confidence,
+        },
+        pkt.tuningOffsetCents,
+      );
+    });
+
+    return () => {
+      unsubStatus();
+      unsubTelemetry();
+    };
+  }, [handlePipelineFrame, stop]);
+
   useEffect(() => {
     return () => {
       stop();
@@ -908,6 +1040,7 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): UseAudioEng
     detectedChannelCount,
     activeChannelIndex,
     ampSettings,
+    asioStatus,
     detectionRef,
     start,
     stop,
@@ -915,6 +1048,10 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): UseAudioEng
     setSelectedDeviceId,
     setChannelSelection,
     updateAmpSettings,
+    probeAsioBridge,
+    selectAsioDriver,
+    setAsioBufferSize,
+    openAsioControlPanel,
     setRmsThreshold,
     resetNoiseCalibration,
     setDetectorBackend,

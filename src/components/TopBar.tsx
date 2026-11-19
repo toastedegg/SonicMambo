@@ -14,6 +14,7 @@ export function TopBar({ stageTitle, onBack, onOpenSetup }: TopBarProps) {
     detectedChannelCount,
     activeChannelIndex,
     ampSettings,
+    asioStatus,
     detectionRef,
     start,
     stop,
@@ -72,6 +73,17 @@ export function TopBar({ stageTitle, onBack, onOpenSetup }: TopBarProps) {
       </div>
 
       <div className="flex items-center gap-2">
+        {asioStatus.asioConnected && (
+          <button
+            type="button"
+            onClick={onOpenSetup}
+            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-sky-400/15 border border-sky-400/40 text-sky-300 text-[11px] font-bold tabular-nums"
+            title={`${asioStatus.driverName} (${asioStatus.bufferSize} samples @ ${asioStatus.sampleRate} Hz)`}
+          >
+            <span>&#9889; ASIO {asioStatus.latencyMs.toFixed(1)}ms</span>
+          </button>
+        )}
+
         {isListening && !isInputGated && (
           <div
             className="hidden sm:flex items-center gap-2 px-2.5 py-1 rounded-full bg-white/[0.04] border border-white/[0.07] text-xs"
