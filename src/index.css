@@ -2,13 +2,24 @@
 @tailwind components;
 @tailwind utilities;
 
+:root {
+  --zine-paper: #FFFBF0;
+  --zine-cream: #FFF4D8;
+  --zine-ink: #121212;
+  --neo-lime: #D8FF2E;
+  --neo-cobalt: #2B59FF;
+  --neo-magenta: #FF3B7F;
+  --neo-amber: #FF8A00;
+  --neo-mint: #1CE088;
+}
+
 body {
   margin: 0;
-  font-family: 'Nunito', system-ui, sans-serif;
+  font-family: 'Bricolage Grotesque', system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  background-color: #121212;
-  color: #ffffff;
+  background-color: #FFFBF0;
+  color: #121212;
 }
 
 #root {
@@ -16,75 +27,192 @@ body {
 }
 
 ::-webkit-scrollbar {
-  width: 8px;
+  width: 10px;
+  height: 10px;
 }
 
 ::-webkit-scrollbar-track {
-  background: transparent;
+  background: #FFF4D8;
+  border-left: 2px solid #121212;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #ffffff26;
-  border-radius: 4px;
+  background: #121212;
+  border: 2px solid #FFF4D8;
+  border-radius: 999px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #ffffff40;
+  background: #2B59FF;
 }
 
-/* ── Reusable component classes ── */
+/* Risograph halftone & zine paper textures */
+.riso-dots {
+  background-image: radial-gradient(rgba(18, 18, 18, 0.13) 1.25px, transparent 1.25px);
+  background-size: 16px 16px;
+}
+
+.riso-dots-subtle {
+  background-image: radial-gradient(rgba(18, 18, 18, 0.08) 1.2px, transparent 1.2px);
+  background-size: 18px 18px;
+}
+
+.riso-stripes {
+  background-image: repeating-linear-gradient(
+    -45deg,
+    rgba(18, 18, 18, 0.08),
+    rgba(18, 18, 18, 0.08) 6px,
+    transparent 6px,
+    transparent 12px
+  );
+}
+
+.riso-grid {
+  background-image:
+    linear-gradient(to right, rgba(18, 18, 18, 0.055) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(18, 18, 18, 0.055) 1px, transparent 1px);
+  background-size: 28px 28px;
+}
+
+/* Playful Duolingo x Arcade animations */
+@keyframes neo-frontier-bob {
+  0%, 100% {
+    transform: translateY(0px) rotate(-2deg);
+  }
+  50% {
+    transform: translateY(-5px) rotate(1.5deg);
+  }
+}
+
+.neo-bob {
+  animation: neo-frontier-bob 2.2s ease-in-out infinite;
+}
+
+@keyframes neo-pulse-ring {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(216, 255, 46, 0.85), 4px 4px 0px #121212;
+  }
+  50% {
+    box-shadow: 0 0 0 7px rgba(216, 255, 46, 0.25), 4px 4px 0px #121212;
+  }
+}
+
+.neo-frontier-glow {
+  animation: neo-pulse-ring 2s ease-in-out infinite;
+}
+
+@keyframes neo-beam-shimmer {
+  0%, 100% {
+    opacity: 0.92;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.neo-beam {
+  animation: neo-beam-shimmer 1.6s ease-in-out infinite;
+}
+
 @layer components {
-  /* Layout shells */
+  /* Core Neo-Brutalist Surfaces */
+  .neo-card {
+    @apply bg-white border-[2.5px] border-[#121212] rounded-2xl shadow-brutal;
+  }
+
+  .neo-card-cream {
+    @apply bg-[#FFF4D8] border-[2.5px] border-[#121212] rounded-2xl shadow-brutal;
+  }
+
+  .neo-card-lg {
+    @apply bg-white border-[2.5px] border-[#121212] rounded-3xl shadow-brutal-lg;
+  }
+
+  .neo-stamp {
+    @apply inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full border-2 border-[#121212] font-mono text-[11px] font-bold uppercase tracking-wider shadow-brutal-xs;
+  }
+
+  /* Tactile Chunk-3D Pressable Buttons (Duolingo x Neo-Brutalism) */
+  .neo-btn-3d {
+    @apply inline-flex items-center justify-center gap-2 border-[2.5px] border-[#121212] border-b-[5px] rounded-2xl font-display font-extrabold tracking-tight transition-all duration-100 select-none;
+  }
+
+  .neo-btn-3d:not(:disabled):hover {
+    @apply -translate-y-[1px] brightness-[1.03];
+  }
+
+  .neo-btn-3d:not(:disabled):active {
+    @apply translate-y-[3px] border-b-[2.5px];
+  }
+
+  .neo-btn-lime {
+    @apply neo-btn-3d bg-[#D8FF2E] text-[#121212];
+  }
+
+  .neo-btn-cobalt {
+    @apply neo-btn-3d bg-[#2B59FF] text-white;
+  }
+
+  .neo-btn-magenta {
+    @apply neo-btn-3d bg-[#FF3B7F] text-white;
+  }
+
+  .neo-btn-amber {
+    @apply neo-btn-3d bg-[#FF8A00] text-[#121212];
+  }
+
+  .neo-btn-paper {
+    @apply neo-btn-3d bg-white text-[#121212];
+  }
+
+  .neo-btn-ink {
+    @apply neo-btn-3d bg-[#121212] text-[#D8FF2E];
+  }
+
+  /* Legacy sp-* compatibility classes styled in Neo-Groove Arcade palette */
   .sp-topbar {
-    @apply h-16 flex items-center justify-between px-6 bg-sp-black/90 backdrop-blur-md border-b border-white/5 shrink-0 z-20;
+    @apply h-16 flex items-center justify-between px-6 bg-[#FFFBF0] border-b-[2.5px] border-[#121212] shrink-0 z-20;
   }
 
   .sp-sidebar {
-    @apply w-72 shrink-0 flex flex-col bg-sp-base rounded-lg m-2 mr-0 overflow-hidden;
+    @apply w-64 xl:w-[272px] shrink-0 flex flex-col bg-[#FFF4D8] border-r-[2.5px] border-[#121212] overflow-hidden;
   }
 
   .sp-bottombar {
-    @apply h-20 shrink-0 bg-sp-black border-t border-sp-elevated z-20;
+    @apply h-20 shrink-0 bg-[#FFFBF0] border-t-[2.5px] border-[#121212] z-20;
   }
 
   .sp-main-content {
-    @apply flex-1 overflow-y-auto p-2;
+    @apply flex-1 overflow-y-auto p-4 bg-[#FFFBF0];
   }
 
   .sp-main-gradient {
-    @apply min-h-full rounded-lg bg-gradient-to-b from-sp-elevated/60 to-sp-black;
+    @apply min-h-full rounded-2xl bg-[#FFFBF0];
   }
 
-  /* Cards & panels */
   .sp-card {
-    @apply rounded-lg bg-sp-base border border-white/5;
+    @apply rounded-2xl bg-white border-[2.5px] border-[#121212] shadow-brutal;
   }
 
   .sp-card-padded {
-    @apply rounded-lg bg-sp-base p-5;
+    @apply rounded-2xl bg-white border-[2.5px] border-[#121212] shadow-brutal p-5;
   }
 
   .sp-card-interactive {
-    @apply bg-sp-base hover:bg-sp-elevated rounded-lg text-left transition-all duration-200;
+    @apply bg-white hover:bg-[#FFF4D8] border-[2.5px] border-[#121212] shadow-brutal rounded-2xl text-left transition-all duration-150;
   }
 
-  /* Buttons */
   .sp-btn-primary {
-    @apply w-full py-4 px-6 rounded-full bg-sp-green hover:bg-sp-green-dark active:scale-[0.98] text-black font-bold text-lg shadow-lg shadow-sp-green/20 transition-all;
+    @apply w-full py-3.5 px-6 neo-btn-lime text-lg;
   }
 
   .sp-btn-primary-compact {
-    @apply inline-flex items-center justify-center rounded-full bg-sp-green hover:bg-sp-green-dark active:scale-[0.98] px-4 py-2 text-sm font-semibold text-black shadow-md shadow-sp-green/15 transition-colors shrink-0 origin-center;
+    @apply neo-btn-lime px-4 py-2 text-sm shrink-0;
   }
 
   @keyframes sp-setup-cta-breathe {
-    0%,
-    100% {
-      transform: scale(1);
-    }
-    50% {
-      transform: scale(1.08);
-    }
+    0%, 100% { transform: scale(1); }
+    50% { transform: scale(1.05); }
   }
 
   .sp-setup-cta-attention {
@@ -92,80 +220,66 @@ body {
   }
 
   .sp-btn-secondary {
-    @apply py-2 px-5 rounded-full bg-sp-elevated hover:bg-sp-highlight text-white font-semibold text-sm transition-colors border border-sp-text-muted/30;
+    @apply neo-btn-paper py-2 px-4 text-sm;
   }
 
   .sp-btn-ghost {
-    @apply flex items-center gap-1.5 text-sm font-semibold text-sp-text-sub hover:text-white transition-colors;
+    @apply flex items-center gap-1.5 text-sm font-bold text-[#423E37] hover:text-[#121212] transition-colors;
   }
 
-  /* Sidebar items */
   .sp-sidebar-item {
-    @apply w-full text-left px-3 py-2.5 rounded-md transition-colors flex items-center gap-3;
+    @apply w-full text-left px-3 py-2 rounded-xl transition-all flex items-center gap-2.5 border-2 border-transparent;
   }
 
   .sp-sidebar-item-active {
-    @apply bg-sp-highlight;
+    @apply bg-[#D8FF2E] border-[#121212] shadow-brutal-xs;
   }
 
   .sp-sidebar-item-idle {
-    @apply hover:bg-sp-elevated;
+    @apply hover:bg-white hover:border-[#121212];
   }
 
-  /* Typography */
   .sp-section-label {
-    @apply text-xs font-bold uppercase tracking-widest text-sp-text-muted;
+    @apply font-mono text-[11px] font-bold uppercase tracking-widest text-[#57534A];
   }
 
   .sp-heading-lg {
-    @apply text-3xl font-extrabold text-white;
+    @apply font-syne text-3xl font-extrabold text-[#121212];
   }
 
   .sp-heading-md {
-    @apply text-xl font-bold text-white;
+    @apply font-syne text-xl font-extrabold text-[#121212];
   }
 
-  /* Feedback pills */
   .sp-pill-match {
-    @apply px-5 py-1.5 rounded-full text-sm font-bold transition-colors bg-brand-green/20 text-brand-green;
+    @apply px-4 py-1.5 rounded-full text-sm font-bold border-2 border-[#121212] bg-[#D8FF2E] text-[#121212];
   }
 
   .sp-pill-miss {
-    @apply px-5 py-1.5 rounded-full text-sm font-bold transition-colors bg-brand-red/20 text-brand-red;
+    @apply px-4 py-1.5 rounded-full text-sm font-bold border-2 border-[#121212] bg-[#FF3B7F] text-white;
   }
 
   .sp-pill-neutral {
-    @apply px-5 py-1.5 rounded-full text-sm font-bold transition-colors bg-sp-elevated text-sp-text-sub;
+    @apply px-4 py-1.5 rounded-full text-sm font-bold border-2 border-[#121212] bg-[#FFF4D8] text-[#121212];
   }
 
-  /* Mic indicator */
   .sp-mic-dot {
-    @apply inline-block w-2 h-2 rounded-full;
+    @apply inline-block w-2.5 h-2.5 rounded-full border border-[#121212];
   }
 
   .sp-mic-dot-on {
-    @apply bg-sp-green animate-pulse;
+    @apply bg-[#1CE088] animate-pulse;
   }
 
   .sp-mic-dot-off {
-    @apply bg-sp-text-muted;
+    @apply bg-[#D6CEBC];
   }
 
-  /* Loudness bar */
   .sp-loudness-track {
-    @apply w-16 h-1.5 rounded-full bg-sp-elevated overflow-hidden;
+    @apply w-16 h-2 rounded-full bg-[#FFF4D8] border border-[#121212] overflow-hidden;
   }
 
   .sp-loudness-fill {
-    @apply h-full rounded-full bg-sp-green transition-all duration-100;
-  }
-
-  /* Play button overlay (home cards) */
-  .sp-play-overlay {
-    @apply absolute right-4 bottom-4 opacity-0 group-hover:opacity-100 translate-y-1 group-hover:translate-y-0 transition-all duration-200;
-  }
-
-  .sp-play-circle {
-    @apply w-10 h-10 rounded-full bg-sp-green flex items-center justify-center shadow-lg shadow-black/40;
+    @apply h-full rounded-full bg-[#1CE088] transition-all duration-100;
   }
 }

@@ -23,11 +23,104 @@ import {
 
 type AppView =
   | { kind: 'roadmap' }
-  | { kind: 'stage'; course: GuitarCourse; initialMode: CoursePracticeMode }
+  | {
+      kind: 'stage';
+      course: GuitarCourse;
+      initialMode: CoursePracticeMode;
+      initialDetailOpen?: boolean;
+    }
   | { kind: 'setup' }
   | { kind: 'history' };
 
 const ONBOARDED_KEY = 'sonicmambo:onboarded';
+
+interface UrlDemoConfig {
+  demoMode: boolean;
+  initialView: AppView;
+}
+
+function buildDemoProgress(): CourseProgressStore {
+  const nowIso = new Date().toISOString();
+  const c1 = GUITAR_COURSES[0];
+  const c2 = GUITAR_COURSES[1];
+  return {
+    unlockAll: false,
+    courses: {
+      [c1.id]: {
+        courseId: c1.id,
+        completed: true,
+        bestAccuracy: 0.96,
+        stars: 3,
+        completedModes: ['play', 'loop', 'shadow'],
+        attempts: 4,
+        lastPlayedIso: nowIso,
+      },
+      [c2.id]: {
+        courseId: c2.id,
+        completed: true,
+        bestAccuracy: 0.93,
+        stars: 3,
+        completedModes: ['play', 'loop', 'shadow'],
+        attempts: 3,
+        lastPlayedIso: nowIso,
+      },
+    },
+  };
+}
+
+function parseInitialUrlConfig(): UrlDemoConfig {
+  if (typeof window === 'undefined') {
+    return { demoMode: false, initialView: { kind: 'roadmap' } };
+  }
+  const params = new URLSearchParams(window.location.search);
+  const demoMode = params.get('demo') === '1';
+  const viewParam = params.get('view');
+  const courseParam = params.get('course');
+
+  const resolveCourse = (fallbackIndex: number): GuitarCourse => {
+    if (courseParam) {
+      const byOrder = GUITAR_COURSES.find((c) => String(c.order) === courseParam);
+      if (byOrder) return byOrder;
+      const byId = GUITAR_COURSES.find((c) => c.id === courseParam);
+      if (byId) return byId;
+    }
+    return GUITAR_COURSES[fallbackIndex] ?? GUITAR_COURSES[0];
+  };
+
+  if (viewParam === 'stage') {
+    return {
+      demoMode,
+      initialView: {
+        kind: 'stage',
+        course: resolveCourse(0), // Course 1: Smokestack E Minor Blues (multi-string colorful highway)
+        initialMode: 'play',
+        initialDetailOpen: false,
+      },
+    };
+  }
+
+  if (viewParam === 'detail') {
+    return {
+      demoMode,
+      initialView: {
+        kind: 'stage',
+        course: resolveCourse(2), // Course 3: Sunburst Soul Lead: Verse (frontier stage cleared -> unlocks Ch II!)
+        initialMode: 'play',
+        initialDetailOpen: true,
+      },
+    };
+  }
+
+  if (viewParam === 'setup') {
+    return { demoMode, initialView: { kind: 'setup' } };
+  }
+
+  if (viewParam === 'history') {
+    return { demoMode, initialView: { kind: 'history' } };
+  }
+
+  return { demoMode, initialView: { kind: 'roadmap' } };
+}
 
 function readOnboarded(): boolean {
   try {
@@ -54,10 +147,15 @@ export default function App() {
 }
 
 function AppShell() {
-  const [onboarded, setOnboarded] = useState<boolean>(() => readOnboarded());
-  const [view, setView] = useState<AppView>({ kind: 'roadmap' });
+  const [urlConfig] = useState<UrlDemoConfig>(() => parseInitialUrlConfig());
+  const isDemoMode = urlConfig.demoMode;
+
+  const [onboarded, setOnboarded] = useState<boolean>(() =>
+    isDemoMode ? true : readOnboarded(),
+  );
+  const [view, setView] = useState<AppView>(() => urlConfig.initialView);
   const [progress, setProgress] = useState<CourseProgressStore>(() =>
-    readCourseProgress(),
+    isDemoMode ? buildDemoProgress() : readCourseProgress(),
   );
   const [setupCtaPulseActive, setSetupCtaPulseActive] = useState(false);
 
@@ -71,7 +169,7 @@ function AppShell() {
 
   const handleSelectCourse = useCallback(
     (course: GuitarCourse, initialMode: CoursePracticeMode = 'play') => {
-      setView({ kind: 'stage', course, initialMode });
+      setView({ kind: 'stage', course, initialMode, initialDetailOpen: false });
     },
     [],
   );
@@ -99,10 +197,12 @@ function AppShell() {
         ...prev,
         unlockAll: !prev.unlockAll,
       };
-      writeCourseProgress(next);
+      if (!isDemoMode) {
+        writeCourseProgress(next);
+      }
       return next;
     });
-  }, []);
+  }, [isDemoMode]);
 
   const handleSetupFinish = useCallback(() => {
     writeOnboarded();
@@ -128,12 +228,17 @@ function AppShell() {
       ? isCourseUnlocked(nextCourseForStage, progress, GUITAR_COURSES)
       : false;
 
+  const stageTitle = isStageView
+    ? `STAGE #${String(view.course.order).padStart(2, '0')} · ${view.course.title}`
+    : null;
+
   return (
-    <div className="h-screen flex flex-col overflow-hidden bg-[#080a0e] font-display">
+    <div className="h-screen flex flex-col overflow-hidden bg-[#FFFBF0] text-[#121212] font-display">
       <TopBar
-        stageTitle={null}
+        stageTitle={stageTitle}
         onBack={view.kind !== 'roadmap' ? handleOpenRoadmap : null}
         onOpenSetup={view.kind !== 'setup' ? () => handleNavigate('setup') : undefined}
+        demoMode={isDemoMode}
       />
 
       <div className="flex-1 flex min-h-0">
@@ -147,12 +252,14 @@ function AppShell() {
           />
         )}
 
-        <main className="flex-1 overflow-y-auto bg-[#080a0e]">
+        <main className="flex-1 overflow-y-auto bg-[#FFFBF0]">
           {isStageView ? (
             <CourseStageView
-              key={view.course.id}
+              key={`${view.course.id}-${view.initialDetailOpen ? 'detail' : 'stage'}`}
               course={view.course}
               initialMode={view.initialMode}
+              initialDetailOpen={Boolean(view.initialDetailOpen)}
+              demoMode={isDemoMode}
               mastery={progress.courses[view.course.id]}
               nextCourse={nextCourseForStage}
               isNextUnlocked={isNextUnlockedForStage}
