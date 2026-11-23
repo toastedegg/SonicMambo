@@ -2,51 +2,56 @@ import { useEffect, useMemo, useRef } from 'react';
 import type { CoursePracticeMode, CourseTabNote, GuitarCourse } from '../data/guitarCourses';
 import type { LessonNoteStatus } from '../types/lesson';
 import { noteLabelToMidi } from '../utils/noteFromFrequency';
-import type { HiddenDifficulty, StageMotionSnapshot } from './MinimalScoreCanvasPixi';
+import type { StageMotionSnapshot } from './MinimalScoreCanvasPixi';
 
 export type VanishPass = 1 | 2 | 3 | 4;
 
 export interface RisoEngravedScoreProps {
   course: GuitarCourse;
-  practiceMode: CoursePracticeMode;
-  hiddenDifficulty: HiddenDifficulty;
+  mode: CoursePracticeMode;
   vanishPass: VanishPass;
   onChangeVanishPass?: (pass: VanishPass) => void;
+  windowStartBar: number;
+  onWindowStartBarChange?: (bar: number) => void;
   loopRange: 'all' | { startBar: number; endBar: number };
-  selectedWindowStartBar: number;
-  onChangeWindowStartBar: (bar: number) => void;
-  onSelectBar: (barNum: number) => void;
   runState: 'idle' | 'running' | 'preview' | 'results';
   motionRef: React.MutableRefObject<StageMotionSnapshot>;
   noteStatusRef: React.MutableRefObject<Record<string, LessonNoteStatus>>;
-  demoMode?: boolean;
+  activeNoteId?: string | null;
+  onSelectBar?: (barNumber: number) => void;
   forensicMode?: boolean;
+  demoMode?: boolean;
 }
 
+// Coupled Two-System Grand Guitar Score Geometry (§2.3 & §2.6 — 04-monolith-jazz copperplate discipline)
 const SVG_W = 1280;
-const SVG_H = 336;
-const MARGIN_LEFT = 82;
+const SVG_H = 430;
+const MARGIN_LEFT = 86;
 const MARGIN_RIGHT = 32;
 const SCORE_W = SVG_W - MARGIN_LEFT - MARGIN_RIGHT;
-const STAFF_TOP = 132;
-const STAFF_GAP = 20; // 5 lines: 132, 152, 172, 192, 212
+
+// Top System: 5-Line Engraved Treble Staff (116, 132, 148, 164, 180)
+const STAFF_TOP = 116;
+const STAFF_GAP = 16;
 const STAFF_BOTTOM = STAFF_TOP + STAFF_GAP * 4;
+
+// Bottom System: Standard 6-Line Guitar TAB (e, B, G, D, A, E -> 262, 282, 302, 322, 342, 362)
+const TAB_TOP = 262;
+const TAB_GAP = 20;
+const TAB_BOTTOM = TAB_TOP + TAB_GAP * 5;
+const TAB_STRINGS = ['e', 'B', 'G', 'D', 'A', 'E'] as const;
 
 const STEP_BY_SEMITONE = [0, 0, 1, 1, 2, 3, 3, 4, 4, 5, 5, 6] as const;
 const SHARP_SEMITONES = [
-  false,
-  true,
-  false,
-  true,
-  false,
-  false,
-  true,
-  false,
-  true,
-  false,
-  true,
-  false,
+  false, true, false, true, false, false, true, false, true, false, true, false,
 ] as const;
+
+const VANISH_TABS: ReadonlyArray<{ pass: VanishPass; label: string }> = [
+  { pass: 1, label: '100% INK' },
+  { pass: 2, label: '55% GHOST' },
+  { pass: 3, label: '25% CONTOUR' },
+  { pass: 4, label: '0% EAR' },
+];
 
 function midiToDiatonic(midi: number): { step: number; isSharp: boolean } {
   const r = Math.round(midi);
@@ -62,9 +67,13 @@ const E3_STEP = midiToDiatonic(52).step;
 
 function midiToStaffY(midi: number): number {
   const { step } = midiToDiatonic(midi);
-  // Guitar sounds one octave lower than written treble; anchor E3 near bottom line
+  // Guitar sounds an octave below written treble; anchor E3 on bottom line
   const y = STAFF_BOTTOM - (step - E3_STEP) * (STAFF_GAP / 2);
-  return Math.max(92, Math.min(266, y));
+  return Math.max(76, Math.min(218, y));
+}
+
+function stringToTabY(stringNum: 1 | 2 | 3 | 4 | 5 | 6): number {
+  return TAB_TOP + (stringNum - 1) * TAB_GAP;
 }
 
 function buildSmoothContourPath(points: ReadonlyArray<{ x: number; y: number }>): string {
@@ -74,726 +83,724 @@ function buildSmoothContourPath(points: ReadonlyArray<{ x: number; y: number }>)
   for (let i = 0; i < points.length - 1; i += 1) {
     const p0 = points[i];
     const p1 = points[i + 1];
-    const cx = (p0.x + p1.x) / 2;
+    const cx = (p0.x + p1.x) * 0.5;
     d += ` C ${cx.toFixed(1)} ${p0.y.toFixed(1)}, ${cx.toFixed(1)} ${p1.y.toFixed(1)}, ${p1.x.toFixed(1)} ${p1.y.toFixed(1)}`;
   }
   return d;
 }
 
-function shortTechTag(tech?: string): string | null {
-  if (!tech) return null;
-  if (tech.includes('vibrato')) return 'VIB';
-  if (tech.includes('slide')) return 'SLD';
-  if (tech.includes('hammer')) return 'H-ON';
-  if (tech.includes('pull')) return 'PULL';
-  return tech.slice(0, 4).toUpperCase();
-}
-
-const PASS_PILLS: ReadonlyArray<{ pass: VanishPass; label: string }> = [
-  { pass: 1, label: '100% INK' },
-  { pass: 2, label: '55% GHOST' },
-  { pass: 3, label: '25% CONTOUR' },
-  { pass: 4, label: '0% EAR' },
-];
-
-interface PositionedNote {
-  note: CourseTabNote;
-  x: number;
-  y: number;
-  isSharp: boolean;
-  tailWidth: number;
-  status: 'upcoming' | 'active' | 'hit' | 'miss';
+function buildVibratoWavePath(startX: number, y: number, length: number): string {
+  const cycles = Math.max(3, Math.floor(length / 10));
+  let d = `M ${startX.toFixed(1)} ${y.toFixed(1)}`;
+  for (let i = 0; i < cycles; i += 1) {
+    const x1 = startX + i * 10 + 2.5;
+    const x2 = startX + i * 10 + 5;
+    const x3 = startX + i * 10 + 7.5;
+    const x4 = startX + (i + 1) * 10;
+    d += ` Q ${x1.toFixed(1)} ${(y - 3.2).toFixed(1)}, ${x2.toFixed(1)} ${y.toFixed(1)} Q ${x3.toFixed(1)} ${(y + 3.2).toFixed(1)}, ${x4.toFixed(1)} ${y.toFixed(1)}`;
+  }
+  return d;
 }
 
 export function RisoEngravedScore({
   course,
-  practiceMode,
-  hiddenDifficulty,
+  mode,
   vanishPass,
   onChangeVanishPass,
+  windowStartBar,
+  onWindowStartBarChange,
   loopRange,
-  selectedWindowStartBar,
-  onChangeWindowStartBar,
-  onSelectBar,
   runState,
   motionRef,
   noteStatusRef,
-  demoMode = false,
+  activeNoteId = null,
+  onSelectBar,
   forensicMode = false,
+  demoMode = false,
 }: RisoEngravedScoreProps) {
   const playheadGroupRef = useRef<SVGGElement | null>(null);
 
-  const barsPerWindow = Math.min(4, course.totalBars);
-  const windowStartBar = Math.max(
-    1,
-    Math.min(selectedWindowStartBar, Math.max(1, course.totalBars - barsPerWindow + 1)),
-  );
-  const windowEndBar = Math.min(course.totalBars, windowStartBar + barsPerWindow - 1);
-  const windowBeats = barsPerWindow * course.beatsPerBar;
+  const visibleBarCount = Math.min(4, Math.max(1, course.totalBars - windowStartBar + 1));
+  const windowEndBar = windowStartBar + visibleBarCount - 1;
   const windowStartBeat = (windowStartBar - 1) * course.beatsPerBar;
+  const windowTotalBeats = visibleBarCount * course.beatsPerBar;
+  const barWidth = SCORE_W / visibleBarCount;
 
-  // Demo snapshot playhead sits on Bar 3 Beat 0.25 (Gmaj7 anchor Fret 7)
-  const demoPlayheadBeat = Math.min(
-    windowStartBeat + windowBeats - 0.5,
-    windowStartBeat + 2 * course.beatsPerBar + 0.25,
+  const beatToX = (courseBeat: number): number => {
+    const rel = courseBeat - windowStartBeat;
+    const barIdx = Math.floor(rel / course.beatsPerBar);
+    const beatInBar = rel - barIdx * course.beatsPerBar;
+    const padL = 30;
+    const padR = 22;
+    const usable = Math.max(40, barWidth - padL - padR);
+    return (
+      MARGIN_LEFT +
+      barIdx * barWidth +
+      padL +
+      (beatInBar / Math.max(1, course.beatsPerBar)) * usable
+    );
+  };
+
+  const laidOutNotes = useMemo(() => {
+    return course.notes
+      .filter((n) => n.bar >= windowStartBar && n.bar <= windowEndBar)
+      .map((n) => {
+        const midi = noteLabelToMidi(n.label) ?? 64;
+        const { isSharp } = midiToDiatonic(midi);
+        const x = beatToX(n.startBeat);
+        const staffY = midiToStaffY(midi);
+        const tabY = stringToTabY(n.stringNum);
+        return { note: n, midi, isSharp, x, staffY, tabY };
+      });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [course.notes, course.beatsPerBar, windowStartBar, windowEndBar, visibleBarCount]);
+
+  const contourPath = useMemo(
+    () => buildSmoothContourPath(laidOutNotes.map((item) => ({ x: item.x, y: item.staffY }))),
+    [laidOutNotes],
   );
 
-  // Zero-jank 60/120fps playhead transform reading motionRef directly
+  // Demo playhead lands on Bar 3 downbeat (Gmaj7) so Hits, Active Lime Badge, and Upcoming are all clearly demonstrated
+  const demoPlayheadBeat = useMemo(() => {
+    const bar3Note = laidOutNotes.find((n) => n.note.bar === windowStartBar + 2);
+    return bar3Note ? bar3Note.note.startBeat : windowStartBeat + 0.5;
+  }, [laidOutNotes, windowStartBar, windowStartBeat]);
+
+  const effectiveActiveId = useMemo(() => {
+    if (activeNoteId) return activeNoteId;
+    if (demoMode && runState === 'idle' && !forensicMode) {
+      const bar3Note = laidOutNotes.find((n) => n.note.bar === windowStartBar + 2);
+      return bar3Note?.note.id ?? laidOutNotes[0]?.note.id ?? null;
+    }
+    return null;
+  }, [activeNoteId, demoMode, forensicMode, laidOutNotes, runState, windowStartBar]);
+
+  // Zero-jank 60/120fps playhead motion driven directly on SVG ref
   useEffect(() => {
     if (forensicMode) return undefined;
+    let rafId = 0;
 
-    const beatToX = (beat: number): number => {
-      const rel = Math.max(0, Math.min(windowBeats, beat - windowStartBeat));
-      return MARGIN_LEFT + (rel / windowBeats) * SCORE_W;
+    const placePlayhead = (beat: number) => {
+      const g = playheadGroupRef.current;
+      if (!g) return;
+      const clampedBeat = Math.max(
+        windowStartBeat,
+        Math.min(windowStartBeat + windowTotalBeats - 0.01, beat),
+      );
+      const px = beatToX(clampedBeat);
+      g.style.transform = `translate3d(${px.toFixed(2)}px, 0, 0)`;
     };
 
-    const setX = (x: number) => {
-      if (playheadGroupRef.current) {
-        playheadGroupRef.current.setAttribute('transform', `translate(${x.toFixed(1)}, 0)`);
-      }
-    };
+    placePlayhead(demoMode && runState === 'idle' ? demoPlayheadBeat : windowStartBeat);
 
     if (runState !== 'running' && runState !== 'preview') {
-      const staticBeat = demoMode ? demoPlayheadBeat : motionRef.current.focusStartBeat;
-      setX(beatToX(staticBeat));
       return undefined;
     }
 
-    let rafId = 0;
     const tick = () => {
-      const m = motionRef.current;
-      if (m.running || m.previewing) {
-        setX(beatToX(m.courseBeat));
-        // Auto-paginate stationary 4-bar window cleanly when playhead enters next phrase
-        const barNow = Math.floor(m.courseBeat / course.beatsPerBar) + 1;
-        if (barNow > windowEndBar && windowEndBar < course.totalBars) {
-          onChangeWindowStartBar(Math.min(course.totalBars - barsPerWindow + 1, windowStartBar + barsPerWindow));
-        } else if (barNow < windowStartBar) {
-          onChangeWindowStartBar(Math.max(1, Math.floor((barNow - 1) / barsPerWindow) * barsPerWindow + 1));
-        }
-      }
+      placePlayhead(motionRef.current.courseBeat);
       rafId = requestAnimationFrame(tick);
     };
     rafId = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(rafId);
-  }, [
-    barsPerWindow,
-    course.beatsPerBar,
-    course.totalBars,
-    demoMode,
-    demoPlayheadBeat,
-    forensicMode,
-    motionRef,
-    onChangeWindowStartBar,
-    runState,
-    windowBeats,
-    windowEndBar,
-    windowStartBar,
-    windowStartBeat,
-  ]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [demoMode, demoPlayheadBeat, forensicMode, motionRef, runState, windowStartBeat, windowTotalBeats]);
 
-  const effectivePass: VanishPass = useMemo(() => {
-    if (forensicMode) return 1;
-    if (practiceMode !== 'hidden') return 1;
-    if (vanishPass !== 1) return vanishPass;
-    if (hiddenDifficulty === 'full-blackout') return 4;
-    if (hiddenDifficulty === 'bar-anchors') return 3;
-    return 2;
-  }, [forensicMode, hiddenDifficulty, practiceMode, vanishPass]);
+  // Vanishing ink opacity tiers (Pass 1..4) — bypassed in forensic review mode
+  const effectivePass: VanishPass = forensicMode ? 1 : vanishPass;
+  const getInkOpacity = (note: CourseTabNote, isActive: boolean): number => {
+    if (forensicMode || isActive) return 1;
+    if (effectivePass === 1) return 1;
+    if (effectivePass === 2) return note.isAnchor ? 0.92 : 0.45;
+    if (effectivePass === 3) return note.isAnchor ? 0.48 : 0.14;
+    return 0.05;
+  };
 
-  const positionedNotes: PositionedNote[] = useMemo(() => {
-    const raw = course.notes.filter(
-      (n) => n.bar >= windowStartBar && n.bar <= windowEndBar,
-    );
-    const activeBeatRef = demoMode && runState === 'idle'
-      ? demoPlayheadBeat
-      : motionRef.current.courseBeat;
-
-    return raw.map((note, idx) => {
-      const relBeat = note.startBeat - windowStartBeat;
-      const x = MARGIN_LEFT + ((relBeat + 0.14) / windowBeats) * SCORE_W;
-      const midi = noteLabelToMidi(note.label) ?? 64;
-      const { isSharp } = midiToDiatonic(midi);
-      const y = midiToStaffY(midi);
-      const tailWidth = Math.max(0, (note.durationBeats / windowBeats) * SCORE_W - 22);
-
-      let status: PositionedNote['status'] = 'upcoming';
-      const liveStatus = noteStatusRef.current[note.id];
-      if (forensicMode) {
-        status = idx === 6 ? 'miss' : 'hit';
-      } else if (liveStatus === 'hit') {
-        status = 'hit';
-      } else if (liveStatus === 'miss') {
-        status = 'miss';
-      } else if (demoMode && runState === 'idle') {
-        if (note.startBeat < activeBeatRef - 0.08) {
-          status = 'hit';
-        } else if (
-          activeBeatRef >= note.startBeat - 0.08 &&
-          activeBeatRef <= note.startBeat + note.durationBeats
-        ) {
-          status = 'active';
-        } else {
-          status = 'upcoming';
-        }
-      } else if (motionRef.current.activeTargetNoteId === note.id) {
-        status = 'active';
-      }
-
-      return { note, x, y, isSharp, tailWidth, status };
-    });
-  }, [
-    course.notes,
-    demoMode,
-    demoPlayheadBeat,
-    forensicMode,
-    motionRef,
-    noteStatusRef,
-    runState,
-    windowBeats,
-    windowEndBar,
-    windowStartBar,
-    windowStartBeat,
-  ]);
-
-  const contourPath = useMemo(
-    () => buildSmoothContourPath(positionedNotes.map((p) => ({ x: p.x, y: p.y }))),
-    [positionedNotes],
-  );
-
-  // Continuous played pitch & timing pocket ribbon for Forensic Mode (Screen 03)
+  // Continuous played pitch forensic ribbon + timing pocket envelope + 3 delicate 1px hairline callouts (§2.6)
   const forensicData = useMemo(() => {
-    if (!forensicMode || positionedNotes.length < 2) return null;
-    const pts: Array<{ x: number; y: number }> = [];
-    for (let i = 0; i < positionedNotes.length; i += 1) {
-      const cur = positionedNotes[i];
-      const next = positionedNotes[i + 1];
-      // Slight realistic micro-intonation & vibrato excursion on Bar 3
-      const centsOffsetPx = cur.note.bar === 2 && i % 2 === 1 ? 6 : cur.note.bar === 3 ? -2 : 0;
-      pts.push({ x: cur.x, y: cur.y + centsOffsetPx });
-      if (cur.note.tech?.includes('vibrato') && next) {
-        const span = Math.min(cur.tailWidth, (next.x - cur.x) * 0.78);
+    if (!forensicMode || laidOutNotes.length < 3) return null;
+    const samples: Array<{ x: number; y: number }> = [];
+    const upperEnv: Array<{ x: number; y: number }> = [];
+    const lowerEnv: Array<{ x: number; y: number }> = [];
+
+    for (let i = 0; i < laidOutNotes.length; i += 1) {
+      const cur = laidOutNotes[i];
+      const next = laidOutNotes[i + 1];
+      const centsJitter = i % 4 === 1 ? -2.2 : i % 3 === 0 ? 1.6 : 0.6;
+      const baseY = cur.staffY + centsJitter;
+      samples.push({ x: cur.x, y: baseY });
+      upperEnv.push({ x: cur.x, y: cur.staffY - 9 });
+      lowerEnv.push({ x: cur.x, y: cur.staffY + 9 });
+
+      if (cur.note.tech === 'vibrato') {
         for (let step = 1; step <= 6; step += 1) {
-          const t = step / 6;
-          const wave = Math.sin(t * Math.PI * 4) * 5.2;
-          pts.push({ x: cur.x + span * t, y: cur.y + wave });
+          const sx = cur.x + step * 11;
+          const sy = baseY + Math.sin(step * 1.65) * 4.2;
+          samples.push({ x: sx, y: sy });
+          upperEnv.push({ x: sx, y: cur.staffY - 8 });
+          lowerEnv.push({ x: sx, y: cur.staffY + 8 });
         }
-      } else if (cur.note.tech?.includes('slide') && next) {
-        const midX = cur.x + (next.x - cur.x) * 0.55;
-        const midY = cur.y + (next.y - cur.y) * 0.45 - 3;
-        pts.push({ x: midX, y: midY });
+      } else if (next) {
+        const mx = (cur.x + next.x) * 0.5;
+        const my = (cur.staffY + next.staffY) * 0.5 + (cur.note.tech === 'slide' ? -1.4 : 1.0);
+        samples.push({ x: mx, y: my });
+        upperEnv.push({ x: mx, y: my - 8.5 });
+        lowerEnv.push({ x: mx, y: my + 8.5 });
       }
     }
 
-    const playedPath = buildSmoothContourPath(pts);
-    const upperEnv = pts.map((p) => `${p.x.toFixed(1)},${(p.y - 10).toFixed(1)}`).join(' ');
-    const lowerEnv = [...pts]
-      .reverse()
-      .map((p) => `${p.x.toFixed(1)},${(p.y + 10).toFixed(1)}`)
-      .join(' ');
+    const pitchPath = buildSmoothContourPath(samples);
+    const pocketPolygon = [
+      ...upperEnv.map((p, idx) => `${idx === 0 ? 'M' : 'L'} ${p.x.toFixed(1)} ${p.y.toFixed(1)}`),
+      ...lowerEnv.reverse().map((p) => `L ${p.x.toFixed(1)} ${p.y.toFixed(1)}`),
+      'Z',
+    ].join(' ');
 
-    // 3 pinned callout anchors directly on the curve
-    const pin1 = positionedNotes[0];
-    const pin2 = positionedNotes.find((p) => p.note.bar === 2) ?? positionedNotes[Math.min(3, positionedNotes.length - 1)];
-    const pin3 = positionedNotes.find((p) => p.note.bar === 3 && p.note.tech?.includes('vibrato'))
-      ?? positionedNotes.find((p) => p.note.bar === 3)
-      ?? positionedNotes[positionedNotes.length - 1];
+    const pin1 = laidOutNotes[0];
+    const pin2 = laidOutNotes[Math.min(3, laidOutNotes.length - 1)];
+    const pin3 =
+      laidOutNotes.find((n) => n.note.bar === windowStartBar + 2 && n.note.tech === 'vibrato') ??
+      laidOutNotes[Math.min(10, laidOutNotes.length - 1)];
 
     return {
-      playedPath,
-      envelopePoints: `${upperEnv} ${lowerEnv}`,
+      pitchPath,
+      pocketPolygon,
       pins: [
-        { x: pin1.x + 18, y: pin1.y, label: 'SLIDE 12→7 · +2¢', color: '#1CE088', textColor: '#121212' },
-        { x: pin2.x + 14, y: pin2.y, label: 'LAYBACK -11ms', color: '#2B59FF', textColor: '#FFFFFF' },
-        { x: pin3.x + 20, y: pin3.y, label: 'VIB 5.2Hz', color: '#D8FF2E', textColor: '#121212' },
+        {
+          x: pin1.x + 28,
+          y: pin1.staffY + 2,
+          label: '01 · SLIDE 12→7 +2¢',
+          dotColor: '#0D9F6E',
+        },
+        {
+          x: pin2.x + 12,
+          y: pin2.staffY,
+          label: '02 · -11ms POCKET',
+          dotColor: '#2B59FF',
+        },
+        {
+          x: pin3.x + 22,
+          y: pin3.staffY,
+          label: '03 · VIB 5.2Hz',
+          dotColor: '#FF3B7F',
+        },
       ],
     };
-  }, [forensicMode, positionedNotes]);
+  }, [forensicMode, laidOutNotes, windowStartBar]);
 
-  const activeBarNum = useMemo(() => {
-    if (forensicMode) return -1;
-    if (demoMode && runState === 'idle') {
-      return Math.min(windowEndBar, windowStartBar + 2);
-    }
-    return Math.floor(motionRef.current.courseBeat / course.beatsPerBar) + 1;
-  }, [course.beatsPerBar, demoMode, forensicMode, motionRef, runState, windowEndBar, windowStartBar]);
-
-  const barWindows = useMemo(() => {
-    const chunks: Array<{ start: number; end: number }> = [];
-    for (let b = 1; b <= course.totalBars; b += 4) {
-      chunks.push({ start: b, end: Math.min(course.totalBars, b + 3) });
-    }
-    return chunks;
-  }, [course.totalBars]);
-
-  const barWidth = SCORE_W / barsPerWindow;
+  const showVanishStrip = !forensicMode && (mode === 'hidden' || mode === 'shadow');
+  const hasMultipleWindows = course.totalBars > 4;
 
   return (
     <section
-      className="neo-card bg-[#FFFBF0] overflow-hidden flex flex-col h-full min-h-0"
-      aria-label="Risograph Engraved Contour Score"
+      className="neo-card-lg bg-[#FFFBF0] overflow-hidden flex flex-col h-full min-h-0 select-none"
+      aria-label={
+        forensicMode
+          ? 'Coupled Staff and TAB Forensic Pitch Analysis'
+          : 'Coupled 5-Line Staff and 6-Line Guitar TAB'
+      }
     >
-      {/* Top Bar: Clickable Measure Chord Pills + Window Pagination + 4-Pass Vanish Stepper */}
-      <div className="px-4 py-2 bg-[#F4ECDC] border-b-[2.5px] border-[#121212] flex items-center justify-between gap-2 flex-wrap">
-        <div className="flex items-center gap-1.5 flex-wrap">
-          {Array.from({ length: barsPerWindow }, (_, idx) => {
-            const barNum = windowStartBar + idx;
-            const chord = course.barChords[barNum - 1] ?? '—';
-            const isActiveBar = barNum === activeBarNum;
-            const isLooped =
-              loopRange !== 'all' && barNum >= loopRange.startBar && barNum <= loopRange.endBar;
-
-            return (
-              <button
-                key={barNum}
-                type="button"
-                onClick={() => onSelectBar(barNum)}
-                className={`group inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border-2 border-[#121212] font-mono text-[11px] font-bold transition-all ${
-                  isLooped
-                    ? 'bg-[#FF8A00] text-[#121212] shadow-brutal-xs'
-                    : isActiveBar
-                      ? 'bg-[#D8FF2E] text-[#121212] shadow-brutal-xs'
-                      : 'bg-white text-[#121212] hover:bg-[#FFF4D8]'
-                }`}
-                title={`Jump or loop Bar ${barNum}`}
-              >
-                <span className="opacity-65">M{barNum}</span>
-                <span className="font-syne text-xs font-extrabold">{chord}</span>
-                <span className="text-[10px] opacity-40 group-hover:opacity-100">↻</span>
-              </button>
-            );
-          })}
-        </div>
-
-        <div className="flex items-center gap-2">
-          {/* Forensic Legend */}
-          {forensicMode && (
-            <div className="hidden md:flex items-center gap-2.5 font-mono text-[10px] font-bold">
-              <span className="inline-flex items-center gap-1 text-[#121212]">
-                <span className="w-3.5 h-1 rounded-full bg-[#FF3B7F] border border-[#121212]" />
-                PITCH
+      {/* Subtle Top Controls Bar ONLY when needed (Window Switcher / Vanishing Pass / Forensic Legend) — Zero duplicate chord row! */}
+      {(showVanishStrip || hasMultipleWindows || forensicMode) && (
+        <div className="px-4 py-1.5 bg-[#F4ECDC]/75 border-b border-[#121212]/20 flex items-center justify-between gap-2 shrink-0">
+          <div className="flex items-center gap-2 font-mono text-[10px] font-bold text-[#57534A]">
+            {forensicMode ? (
+              <>
+                <span className="inline-flex items-center gap-1.5 text-[#121212]">
+                  <span className="w-3.5 h-[2.5px] rounded-full bg-[#FF3B7F]" />
+                  PLAYED PITCH
+                </span>
+                <span className="inline-flex items-center gap-1.5 text-[#2B59FF]">
+                  <span className="w-3 h-2 rounded-sm bg-[#2B59FF]/20 border border-[#2B59FF]/60" />
+                  TIMING POCKET
+                </span>
+              </>
+            ) : (
+              <span className="tracking-wider uppercase">
+                COUPLED TREBLE STAFF + 6-LINE TAB
               </span>
-              <span className="inline-flex items-center gap-1 text-[#121212]">
-                <span className="w-3.5 h-2 rounded-sm bg-[#2B59FF]/20 border border-[#2B59FF]" />
-                POCKET
-              </span>
-            </div>
-          )}
+            )}
+          </div>
 
-          {/* 4-Pass Vanishing Ink Selector (visible in Hidden/Blackout mode) */}
-          {practiceMode === 'hidden' && !forensicMode && onChangeVanishPass && (
-            <div className="inline-flex items-center gap-1 p-0.5 rounded-lg bg-white border-2 border-[#121212]">
-              {PASS_PILLS.map((p) => (
-                <button
-                  key={p.pass}
-                  type="button"
-                  onClick={() => onChangeVanishPass(p.pass)}
-                  className={`px-2 py-0.5 rounded-md font-mono text-[10px] font-bold transition-colors ${
-                    effectivePass === p.pass
-                      ? 'bg-[#121212] text-[#D8FF2E]'
-                      : 'text-[#423E37] hover:text-[#121212]'
-                  }`}
-                >
-                  {p.label}
-                </button>
-              ))}
-            </div>
-          )}
-
-          {/* Stationary 4-Bar Window Pagination */}
-          {barWindows.length > 1 && (
-            <div className="inline-flex items-center gap-1 p-0.5 rounded-lg bg-white border-2 border-[#121212]">
-              {barWindows.map((win) => {
-                const active = win.start === windowStartBar;
-                return (
+          <div className="flex items-center gap-2">
+            {showVanishStrip && (
+              <div className="inline-flex items-center gap-0.5 p-0.5 rounded-lg bg-[#FFFBF0] border border-[#121212]">
+                {VANISH_TABS.map((t) => (
                   <button
-                    key={win.start}
+                    key={t.pass}
                     type="button"
-                    onClick={() => onChangeWindowStartBar(win.start)}
-                    className={`px-2 py-0.5 rounded-md font-mono text-[10px] font-bold transition-colors ${
-                      active
+                    onClick={() => onChangeVanishPass?.(t.pass)}
+                    className={`px-2 py-0.5 rounded font-mono text-[10px] font-bold transition-colors ${
+                      effectivePass === t.pass
                         ? 'bg-[#121212] text-[#D8FF2E]'
-                        : 'text-[#423E37] hover:text-[#121212]'
+                        : 'text-[#57534A] hover:text-[#121212]'
                     }`}
                   >
-                    B{win.start}–{win.end}
+                    {t.label}
                   </button>
-                );
-              })}
-            </div>
-          )}
-        </div>
-      </div>
+                ))}
+              </div>
+            )}
 
-      {/* Main SVG Engraved 5-Line Staff + Contour Ribbon + Fret-Inside-Notehead Pills */}
-      <div className="relative flex-1 min-h-0 w-full bg-[#FFFBF0] riso-paper-grain flex items-center justify-center">
+            {hasMultipleWindows && (
+              <div className="inline-flex items-center p-0.5 rounded-lg bg-[#FFFBF0] border border-[#121212]">
+                {[1, 5].map((startBar) => {
+                  if (startBar > course.totalBars) return null;
+                  const endBar = Math.min(course.totalBars, startBar + 3);
+                  const active = windowStartBar === startBar;
+                  return (
+                    <button
+                      key={startBar}
+                      type="button"
+                      onClick={() => onWindowStartBarChange?.(startBar)}
+                      className={`px-2 py-0.5 rounded font-mono text-[10px] font-bold ${
+                        active ? 'bg-[#121212] text-[#D8FF2E]' : 'text-[#57534A] hover:text-[#121212]'
+                      }`}
+                    >
+                      B{startBar}–{endBar}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Main Coupled 5-Line Staff + 6-Line Guitar TAB Copperplate Engraving SVG */}
+      <div className="relative flex-1 min-h-0 w-full bg-[#FFFBF0] riso-paper-grain flex items-center justify-center px-2 py-1">
         <svg
           viewBox={`0 0 ${SVG_W} ${SVG_H}`}
           preserveAspectRatio="xMidYMid meet"
           className="w-full h-full max-h-full block select-none"
           role="img"
-          aria-label={forensicMode ? 'Forensic pitch ribbon over 4-bar score' : '4-bar engraved contour staff'}
+          aria-label="Coupled 5-line treble staff and 6-line guitar TAB"
         >
-          <defs>
-            <pattern
-              id="riso-coral-hatch"
-              width="6"
-              height="6"
-              patternUnits="userSpaceOnUse"
-              patternTransform="rotate(45)"
-            >
-              <rect width="6" height="6" fill="#FF3B7F" />
-              <line x1="0" y1="0" x2="0" y2="6" stroke="#121212" strokeWidth="1.6" opacity="0.32" />
-            </pattern>
-          </defs>
+          {/* Coupled Left Grand-System Brace connecting Staff + TAB */}
+          <line
+            x1={MARGIN_LEFT - 10}
+            y1={STAFF_TOP}
+            x2={MARGIN_LEFT - 10}
+            y2={TAB_BOTTOM}
+            stroke="#121212"
+            strokeWidth="2.2"
+          />
 
-          {/* Subtle Active Bar Highlight Band */}
-          {Array.from({ length: barsPerWindow }, (_, idx) => {
+          {/* Measure Columns, Clickable BAR 01..04 Chord Headers (Printed ONCE!), and Shared Barlines */}
+          {Array.from({ length: visibleBarCount }, (_, idx) => {
             const barNum = windowStartBar + idx;
             const bx = MARGIN_LEFT + idx * barWidth;
-            const isActiveBar = barNum === activeBarNum;
-            const isLooped =
-              loopRange !== 'all' && barNum >= loopRange.startBar && barNum <= loopRange.endBar;
+            const isLoopedBar =
+              loopRange !== 'all' &&
+              barNum >= loopRange.startBar &&
+              barNum <= loopRange.endBar;
+            const isActiveBar =
+              !forensicMode &&
+              demoMode &&
+              runState === 'idle' &&
+              barNum === windowStartBar + 2;
 
             return (
-              <g key={`bar-bg-${barNum}`}>
-                {(isActiveBar || isLooped) && (
+              <g key={`bar-${barNum}`}>
+                {/* Subtle Warm Cream Highlight on Looped or Active Bar */}
+                {(isLoopedBar || isActiveBar) && (
                   <rect
                     x={bx}
-                    y={18}
+                    y={52}
                     width={barWidth}
-                    height={SVG_H - 34}
-                    rx={8}
-                    fill={isLooped ? 'rgba(255,138,0,0.12)' : 'rgba(216,255,46,0.15)'}
-                    stroke={isLooped ? '#FF8A00' : 'rgba(18,18,18,0.14)'}
-                    strokeWidth={1.5}
-                    strokeDasharray={isLooped ? '5 4' : undefined}
+                    height={TAB_BOTTOM - 32}
+                    rx="6"
+                    fill={isLoopedBar ? '#2B59FF' : '#D8FF2E'}
+                    opacity={isLoopedBar ? 0.06 : 0.11}
                   />
                 )}
 
-                {/* Chord Engraving Header inside Plate */}
-                <text
-                  x={bx + 14}
-                  y={32}
-                  fill="#121212"
-                  fontFamily="Syne, sans-serif"
-                  fontWeight="800"
-                  fontSize="18"
-                >
-                  {course.barChords[barNum - 1] ?? ''}
-                </text>
-                <text
-                  x={bx + barWidth - 12}
-                  y={30}
-                  textAnchor="end"
-                  fill="rgba(18,18,18,0.45)"
-                  fontFamily="Space Mono, monospace"
-                  fontWeight="700"
-                  fontSize="11"
-                >
-                  M{barNum}
-                </text>
-
-                {/* Subtle Beat Sub-Grid Hairlines */}
-                {[1, 2, 3].map((beatIdx) => {
-                  const gx = bx + (beatIdx / course.beatsPerBar) * barWidth;
-                  return (
-                    <line
-                      key={beatIdx}
-                      x1={gx}
-                      y1={STAFF_TOP - 8}
-                      x2={gx}
-                      y2={STAFF_BOTTOM + 8}
-                      stroke="rgba(18,18,18,0.08)"
-                      strokeWidth="1"
-                      strokeDasharray="3 4"
-                    />
-                  );
-                })}
-
-                {/* Measure Barline */}
+                {/* Shared Vertical Measure Barline spanning BOTH Staff & TAB */}
                 <line
-                  x1={bx + barWidth}
+                  x1={bx}
                   y1={STAFF_TOP}
-                  x2={bx + barWidth}
+                  x2={bx}
                   y2={STAFF_BOTTOM}
                   stroke="#121212"
-                  strokeWidth={idx === barsPerWindow - 1 ? 3 : 1.6}
+                  strokeWidth={idx === 0 ? 2 : 1.15}
+                  opacity={idx === 0 ? 0.85 : 0.45}
                 />
+                <line
+                  x1={bx}
+                  y1={TAB_TOP}
+                  x2={bx}
+                  y2={TAB_BOTTOM}
+                  stroke="#121212"
+                  strokeWidth={idx === 0 ? 2 : 1.15}
+                  opacity={idx === 0 ? 0.85 : 0.45}
+                />
+                {/* Faint Vertical Guide Connecting Staff & TAB Beat Grid */}
+                <line
+                  x1={bx}
+                  y1={STAFF_BOTTOM}
+                  x2={bx}
+                  y2={TAB_TOP}
+                  stroke="#121212"
+                  strokeWidth="0.8"
+                  strokeDasharray="3 4"
+                  opacity="0.16"
+                />
+
+                {/* Clickable Engraved Bar & Chord Heading (Printed ONCE per bar!) */}
+                <g
+                  className="cursor-pointer"
+                  onClick={() => onSelectBar?.(barNum)}
+                  role="button"
+                  tabIndex={0}
+                >
+                  <rect
+                    x={bx + 8}
+                    y={14}
+                    width={136}
+                    height={28}
+                    rx="6"
+                    fill="transparent"
+                  />
+                  <text
+                    x={bx + 12}
+                    y={32}
+                    fill="#57534A"
+                    fontFamily="Space Mono, monospace"
+                    fontWeight="700"
+                    fontSize="11"
+                    letterSpacing="0.06em"
+                  >
+                    BAR {String(barNum).padStart(2, '0')}
+                  </text>
+                  <text
+                    x={bx + 68}
+                    y={33}
+                    fill="#121212"
+                    fontFamily="Syne, sans-serif"
+                    fontWeight="800"
+                    fontSize="18"
+                  >
+                    {course.barChords[barNum - 1] ?? ''}
+                  </text>
+                </g>
               </g>
             );
           })}
 
-          {/* Left Staff Clef Spine + Engraved 5-Line Treble Staff */}
-          <line
-            x1={MARGIN_LEFT}
-            y1={STAFF_TOP}
-            x2={MARGIN_LEFT}
-            y2={STAFF_BOTTOM}
-            stroke="#121212"
-            strokeWidth="2.5"
-          />
+          {/* Closing Double Barline on Right Edge */}
+          <line x1={SVG_W - MARGIN_RIGHT - 5} y1={STAFF_TOP} x2={SVG_W - MARGIN_RIGHT - 5} y2={STAFF_BOTTOM} stroke="#121212" strokeWidth="1.2" opacity="0.7" />
+          <line x1={SVG_W - MARGIN_RIGHT} y1={STAFF_TOP} x2={SVG_W - MARGIN_RIGHT} y2={STAFF_BOTTOM} stroke="#121212" strokeWidth="3" opacity="0.9" />
+          <line x1={SVG_W - MARGIN_RIGHT - 5} y1={TAB_TOP} x2={SVG_W - MARGIN_RIGHT - 5} y2={TAB_BOTTOM} stroke="#121212" strokeWidth="1.2" opacity="0.7" />
+          <line x1={SVG_W - MARGIN_RIGHT} y1={TAB_TOP} x2={SVG_W - MARGIN_RIGHT} y2={TAB_BOTTOM} stroke="#121212" strokeWidth="3" opacity="0.9" />
 
+          {/* ── TOP SYSTEM: 5-LINE ENGRAVED TREBLE STAFF ── */}
           {[0, 1, 2, 3, 4].map((lineIdx) => {
-            const ly = STAFF_TOP + lineIdx * STAFF_GAP;
+            const y = STAFF_TOP + lineIdx * STAFF_GAP;
             return (
               <line
-                key={`staff-line-${lineIdx}`}
-                x1={MARGIN_LEFT}
-                y1={ly}
+                key={`st-${lineIdx}`}
+                x1={MARGIN_LEFT - 10}
+                y1={y}
                 x2={SVG_W - MARGIN_RIGHT}
-                y2={ly}
-                stroke="rgba(18,18,18,0.32)"
-                strokeWidth="1.5"
+                y2={y}
+                stroke="#121212"
+                strokeWidth="1.15"
+                opacity="0.48"
               />
             );
           })}
 
-          {/* Crisp Engraved Treble Clef Emblem */}
+          {/* Treble Clef Glyph */}
           <text
-            x={MARGIN_LEFT - 52}
+            x={MARGIN_LEFT - 44}
             y={STAFF_BOTTOM - 2}
-            fontSize="94"
-            fill="#121212"
+            fontSize="74"
             fontFamily="Georgia, serif"
-            opacity="0.92"
+            fill="#121212"
+            opacity="0.88"
           >
             𝄞
           </text>
 
-          {/* Smooth Melodic Horizon Contour Ribbon (from 04 Monolith Jazz, re-inked in Cobalt) */}
-          {effectivePass <= 3 && contourPath && (
+          {/* Subtle Cobalt Melodic Contour Horizon Arc */}
+          {contourPath && (
             <path
               d={contourPath}
               fill="none"
-              stroke={forensicMode ? 'rgba(43,89,255,0.28)' : '#2B59FF'}
-              strokeWidth={effectivePass === 3 ? 3.5 : 2.6}
+              stroke="#2B59FF"
+              strokeWidth={effectivePass === 3 ? 2.4 : 1.75}
               strokeLinecap="round"
-              strokeDasharray={effectivePass === 3 ? '7 5' : undefined}
-              opacity={forensicMode ? 0.55 : 0.72}
+              opacity={forensicMode ? 0.28 : effectivePass === 4 ? 0.08 : 0.44}
             />
           )}
 
-          {/* Forensic Timing Pocket Envelope + Continuous Played Pitch Ribbon (Screen 03) */}
+          {/* ── BOTTOM SYSTEM: STANDARD 6-LINE GUITAR TAB (e B G D A E) ── */}
+          {TAB_STRINGS.map((strLabel, idx) => {
+            const y = TAB_TOP + idx * TAB_GAP;
+            return (
+              <g key={`tab-line-${strLabel}`}>
+                <line
+                  x1={MARGIN_LEFT - 10}
+                  y1={y}
+                  x2={SVG_W - MARGIN_RIGHT}
+                  y2={y}
+                  stroke="#121212"
+                  strokeWidth={idx >= 3 ? 1.25 : 1.0}
+                  opacity="0.38"
+                />
+                <text
+                  x={MARGIN_LEFT - 26}
+                  y={y + 4}
+                  textAnchor="middle"
+                  fontFamily="Space Mono, monospace"
+                  fontWeight="700"
+                  fontSize="11.5"
+                  fill="#57534A"
+                >
+                  {strLabel}
+                </text>
+              </g>
+            );
+          })}
+
+          {/* Vertical T-A-B Clef Label */}
+          <g fontFamily="Syne, sans-serif" fontWeight="800" fontSize="13" fill="#121212" opacity="0.82">
+            <text x={MARGIN_LEFT - 56} y={TAB_TOP + 22} textAnchor="middle">T</text>
+            <text x={MARGIN_LEFT - 56} y={TAB_TOP + 54} textAnchor="middle">A</text>
+            <text x={MARGIN_LEFT - 56} y={TAB_TOP + 86} textAnchor="middle">B</text>
+          </g>
+
+          {/* ── FORENSIC CONTINUOUS PLAYED PITCH & TIMING POCKET OVERLAY (Screen 03) ── */}
           {forensicData && (
             <g>
-              <polygon
-                points={forensicData.envelopePoints}
-                fill="rgba(43,89,255,0.14)"
-                stroke="rgba(43,89,255,0.35)"
+              <path
+                d={forensicData.pocketPolygon}
+                fill="#2B59FF"
+                opacity="0.11"
+                stroke="#2B59FF"
+                strokeOpacity="0.32"
                 strokeWidth="1"
               />
               <path
-                d={forensicData.playedPath}
+                d={forensicData.pitchPath}
                 fill="none"
                 stroke="#FF3B7F"
-                strokeWidth="4.2"
+                strokeWidth="3.2"
                 strokeLinecap="round"
-              />
-              <path
-                d={forensicData.playedPath}
-                fill="none"
-                stroke="#121212"
-                strokeWidth="1.1"
-                strokeDasharray="2 6"
-                opacity="0.45"
               />
             </g>
           )}
 
-          {/* Engraved Fret-Inside-Notehead Pills (Strict 4-State Semantic Color + Shape!) */}
-          {positionedNotes.map((item) => {
-            const { note, x, y, isSharp, tailWidth, status } = item;
-            const tech = shortTechTag(note.tech);
+          {/* ── COUPLED CLASSICAL STAFF NOTEHEADS + FRAMELESS PRINT TAB DIGITS ── */}
+          {laidOutNotes.map((item, idx) => {
+            const { note, isSharp, x, staffY, tabY } = item;
+            const nextItem = laidOutNotes[idx + 1];
+            const liveStatus = noteStatusRef.current[note.id];
+            const isActive = !forensicMode && effectiveActiveId === note.id;
 
-            // 4-Pass Vanishing Ink visibility rules
-            let noteOpacity = 1;
-            if (effectivePass === 2 && !note.isAnchor) noteOpacity = 0.34;
-            if (effectivePass === 3) noteOpacity = note.isAnchor ? 0.65 : 0.08;
-            if (effectivePass === 4) noteOpacity = 0;
+            let state: 'upcoming' | 'active' | 'hit' | 'miss' = 'upcoming';
+            if (isActive) {
+              state = 'active';
+            } else if (liveStatus === 'hit') {
+              state = 'hit';
+            } else if (liveStatus === 'miss') {
+              state = 'miss';
+            } else if (forensicMode) {
+              state = idx === 6 ? 'miss' : 'hit';
+            } else if (demoMode && runState === 'idle' && note.startBeat < demoPlayheadBeat) {
+              state = 'hit';
+            }
 
-            if (noteOpacity === 0) return null;
+            const inkOpacity = getInkOpacity(note, isActive);
+            const stemDown = staffY <= STAFF_TOP + STAFF_GAP * 2;
+            const stemX = stemDown ? x - 6.2 : x + 6.2;
+            const stemY2 = stemDown ? staffY + 34 : staffY - 34;
 
-            const isActive = status === 'active';
-            const isHit = status === 'hit';
-            const isMiss = status === 'miss';
+            const noteheadFill =
+              state === 'active'
+                ? '#121212'
+                : state === 'hit'
+                  ? '#0D9F6E'
+                  : state === 'miss'
+                    ? '#FF3B7F'
+                    : '#121212';
 
-            const pillW = isActive ? 34 : 28;
-            const pillH = isActive ? 24 : 20;
-            const fill = isActive
-              ? '#D8FF2E'
-              : isHit
-                ? '#1CE088'
-                : isMiss
-                  ? 'url(#riso-coral-hatch)'
-                  : '#FFFFFF';
-            const textFill = isMiss ? '#FFFFFF' : '#121212';
+            const tabDigitFill =
+              state === 'active'
+                ? '#121212'
+                : state === 'hit'
+                  ? '#0D9F6E'
+                  : state === 'miss'
+                    ? '#FF3B7F'
+                    : '#121212';
 
-            // Ledger lines above or below staff
+            // Ledger lines when note sits above top staff line or below bottom staff line
             const ledgerLines: number[] = [];
-            if (y < STAFF_TOP - STAFF_GAP / 2) {
-              for (let ly = STAFF_TOP - STAFF_GAP; ly >= y - 4; ly -= STAFF_GAP) {
+            if (staffY <= STAFF_TOP - STAFF_GAP) {
+              for (let ly = STAFF_TOP - STAFF_GAP; ly >= staffY - 2; ly -= STAFF_GAP) {
                 ledgerLines.push(ly);
               }
             }
-            if (y > STAFF_BOTTOM + STAFF_GAP / 2) {
-              for (let ly = STAFF_BOTTOM + STAFF_GAP; ly <= y + 4; ly += STAFF_GAP) {
+            if (staffY >= STAFF_BOTTOM + STAFF_GAP) {
+              for (let ly = STAFF_BOTTOM + STAFF_GAP; ly <= staffY + 2; ly += STAFF_GAP) {
                 ledgerLines.push(ly);
               }
             }
 
             return (
-              <g key={note.id} opacity={noteOpacity}>
-                {/* Ledger lines */}
+              <g key={note.id} opacity={inkOpacity}>
+                {/* Ledger lines if needed */}
                 {ledgerLines.map((ly) => (
                   <line
                     key={ly}
-                    x1={x - 20}
+                    x1={x - 12}
                     y1={ly}
-                    x2={x + 20}
+                    x2={x + 12}
                     y2={ly}
                     stroke="#121212"
-                    strokeWidth="1.6"
+                    strokeWidth="1.15"
+                    opacity="0.55"
                   />
                 ))}
 
-                {/* Duration Sustain Tail Bar */}
-                {tailWidth > 8 && (
-                  <rect
-                    x={x + pillW / 2 - 2}
-                    y={y - 3.5}
-                    width={tailWidth}
-                    height={7}
-                    rx={3.5}
-                    fill={
-                      isActive
-                        ? '#D8FF2E'
-                        : isHit
-                          ? 'rgba(28,224,136,0.45)'
-                          : 'rgba(18,18,18,0.12)'
-                    }
+                {/* Classical Articulation Marks (ZERO bordered pills!) */}
+                {/* Diagonal Slide Line `/` */}
+                {note.tech === 'slide' && nextItem && nextItem.note.bar === note.bar && (
+                  <>
+                    <line
+                      x1={x + 10}
+                      y1={staffY + (nextItem.staffY > staffY ? 3 : -3)}
+                      x2={nextItem.x - 10}
+                      y2={nextItem.staffY + (nextItem.staffY > staffY ? -3 : 3)}
+                      stroke="#121212"
+                      strokeWidth="1.35"
+                      opacity="0.65"
+                    />
+                    <line
+                      x1={x + 13}
+                      y1={tabY + (nextItem.tabY > tabY ? 2 : -2)}
+                      x2={nextItem.x - 13}
+                      y2={nextItem.tabY + (nextItem.tabY > tabY ? -2 : 2)}
+                      stroke="#121212"
+                      strokeWidth="1.3"
+                      opacity="0.55"
+                    />
+                  </>
+                )}
+
+                {/* Wavy Vibrato Squiggle `~~~` */}
+                {note.tech === 'vibrato' && (
+                  <path
+                    d={buildVibratoWavePath(x + 10, staffY - 16, Math.max(36, note.durationBeats * 46))}
+                    fill="none"
                     stroke="#121212"
-                    strokeWidth={isActive ? 1.5 : 1}
-                    opacity={isActive ? 0.95 : 0.75}
+                    strokeWidth="1.3"
+                    opacity="0.62"
                   />
                 )}
 
-                {/* Vertical Stem */}
-                <line
-                  x1={x + pillW / 2 - 1}
-                  y1={y}
-                  x2={x + pillW / 2 - 1}
-                  y2={y > STAFF_TOP + STAFF_GAP * 2 ? y - 42 : y + 42}
-                  stroke="#121212"
-                  strokeWidth={isActive || isHit ? 2.2 : 1.6}
-                />
+                {/* Curved Hammer-On / Pull-Off Slur `⌒` */}
+                {(note.tech === 'hammer' || note.tech === 'pull') &&
+                  nextItem &&
+                  nextItem.note.bar === note.bar && (
+                    <path
+                      d={`M ${x + 2} ${staffY - 12} Q ${((x + nextItem.x) * 0.5).toFixed(1)} ${(Math.min(staffY, nextItem.staffY) - 28).toFixed(1)}, ${nextItem.x - 2} ${nextItem.staffY - 12}`}
+                      fill="none"
+                      stroke="#121212"
+                      strokeWidth="1.35"
+                      opacity="0.68"
+                    />
+                  )}
 
-                {/* Sharp accidental */}
+                {/* Sharp Accidental */}
                 {isSharp && (
                   <text
-                    x={x - pillW / 2 - 10}
-                    y={y + 5}
+                    x={x - 15}
+                    y={staffY + 4}
+                    fontFamily="Georgia, serif"
                     fontSize="14"
-                    fontWeight="800"
-                    fontFamily="Space Mono, monospace"
-                    fill="#121212"
+                    fontWeight="700"
+                    fill={noteheadFill}
                   >
-                    #
+                    ♯
                   </text>
                 )}
 
-                {/* Active Double Halo Ring */}
-                {isActive && (
-                  <rect
-                    x={x - pillW / 2 - 5}
-                    y={y - pillH / 2 - 5}
-                    width={pillW + 10}
-                    height={pillH + 10}
-                    rx={14}
-                    fill="none"
+                {/* Subtle Active Lime Aura Ring on Staff Notehead */}
+                {state === 'active' && (
+                  <circle
+                    cx={x}
+                    cy={staffY}
+                    r="12"
+                    fill="#D8FF2E"
                     stroke="#121212"
-                    strokeWidth="2.5"
-                    strokeDasharray="4 3"
+                    strokeWidth="1.8"
                   />
                 )}
 
-                {/* Hard Ink Offset Shadow */}
-                <rect
-                  x={x - pillW / 2 + 2.5}
-                  y={y - pillH / 2 + 2.5}
-                  width={pillW}
-                  height={pillH}
-                  rx={10}
-                  fill="#121212"
+                {/* Classical Tilted Copperplate Oval Notehead + Thin 1.25px Stem */}
+                <line
+                  x1={stemX}
+                  y1={staffY}
+                  x2={stemX}
+                  y2={stemY2}
+                  stroke={noteheadFill}
+                  strokeWidth="1.25"
+                />
+                <ellipse
+                  cx={x}
+                  cy={staffY}
+                  rx="6.8"
+                  ry="5"
+                  transform={`rotate(-18 ${x} ${staffY})`}
+                  fill={noteheadFill}
                 />
 
-                {/* Fret-Inside-Notehead Pill */}
-                <rect
-                  x={x - pillW / 2}
-                  y={y - pillH / 2}
-                  width={pillW}
-                  height={pillH}
-                  rx={10}
-                  fill={fill}
-                  stroke="#121212"
-                  strokeWidth={isActive ? 2.5 : 2}
-                />
-
-                <text
-                  x={x}
-                  y={y + 4.5}
-                  textAnchor="middle"
-                  fontFamily="Space Mono, monospace"
-                  fontWeight="800"
-                  fontSize={isActive ? '13' : '11.5'}
-                  fill={textFill}
-                >
-                  {note.fret}
-                </text>
-
-                {/* Non-Color Accessibility Status Micro-Badge (✓ Hit / × Miss) */}
-                {(isHit || isMiss) && !forensicMode && (
-                  <g transform={`translate(${x + pillW / 2 - 2}, ${y - pillH / 2 - 2})`}>
-                    <circle
-                      r="6.5"
-                      fill={isHit ? '#121212' : '#FF3B7F'}
+                {/* ── BOTTOM SYSTEM: FRAMELESS PRINT TAB DIGIT (ONLY Active Note gets Acid Lime Badge!) ── */}
+                {state === 'active' ? (
+                  <g transform={`translate(${x - 13}, ${tabY - 10})`}>
+                    <rect
+                      width="26"
+                      height="20"
+                      rx="6"
+                      fill="#D8FF2E"
                       stroke="#121212"
-                      strokeWidth="1.4"
+                      strokeWidth="2"
                     />
                     <text
-                      y="3.2"
+                      x="13"
+                      y="14"
                       textAnchor="middle"
-                      fontSize="8.5"
+                      fontFamily="Space Mono, monospace"
                       fontWeight="800"
-                      fill={isHit ? '#D8FF2E' : '#FFFFFF'}
+                      fontSize="13"
+                      fill="#121212"
                     >
-                      {isHit ? '✓' : '×'}
+                      {note.fret}
                     </text>
                   </g>
-                )}
-
-                {/* Compact Technique Stamp */}
-                {tech && !forensicMode && (
-                  <g transform={`translate(${x}, ${y - pillH / 2 - 14})`}>
+                ) : (
+                  <g>
+                    {/* Frameless #FFFBF0 Paper Mask clears string line cleanly behind print digit */}
                     <rect
-                      x="-16"
-                      y="-8"
-                      width="32"
-                      height="14"
-                      rx="5"
-                      fill={isActive ? '#2B59FF' : '#FFF4D8'}
-                      stroke="#121212"
-                      strokeWidth="1.4"
+                      x={x - 10}
+                      y={tabY - 9}
+                      width="20"
+                      height="18"
+                      rx="3"
+                      fill="#FFFBF0"
+                      stroke="none"
                     />
                     <text
-                      y="2.5"
+                      x={x}
+                      y={tabY + 4.5}
                       textAnchor="middle"
                       fontFamily="Space Mono, monospace"
                       fontWeight="700"
-                      fontSize="8.5"
-                      fill={isActive ? '#FFFFFF' : '#121212'}
+                      fontSize="13.5"
+                      fill={tabDigitFill}
                     >
-                      {tech}
+                      {note.fret}
                     </text>
                   </g>
                 )}
@@ -801,85 +808,78 @@ export function RisoEngravedScore({
             );
           })}
 
-          {/* Forensic Pinned Curve Callouts (Screen 03 — Zero Prose Cards!) */}
+          {/* ── FORENSIC 3 DELICATE 1PX HAIRLINE PIN CALLOUTS (Screen 03 — Zero Bulky Colored Banners!) ── */}
           {forensicData &&
-            forensicData.pins.map((pin, idx) => {
-              const boxY = Math.max(46, Math.min(72, pin.y - 68));
-              const boxW = pin.label.length * 7.8 + 26;
+            forensicData.pins.map((pin) => {
+              const boxW = pin.label.length * 6.9 + 20;
+              const boxY = 54;
+              const boxX = Math.max(MARGIN_LEFT + 6, Math.min(SVG_W - MARGIN_RIGHT - boxW - 6, pin.x - boxW / 2));
               return (
                 <g key={pin.label}>
                   <line
                     x1={pin.x}
                     y1={pin.y}
                     x2={pin.x}
-                    y2={boxY + 24}
+                    y2={boxY + 21}
                     stroke="#121212"
-                    strokeWidth="2"
+                    strokeWidth="1"
+                    strokeDasharray="2 2"
+                    opacity="0.72"
                   />
-                  <circle cx={pin.x} cy={pin.y} r="5" fill={pin.color} stroke="#121212" strokeWidth="2" />
-                  <g transform={`translate(${Math.max(MARGIN_LEFT + 6, pin.x - boxW / 2)}, ${boxY})`}>
-                    <rect x="2.5" y="2.5" width={boxW} height="24" rx="8" fill="#121212" />
+                  <circle
+                    cx={pin.x}
+                    cy={pin.y}
+                    r="3.8"
+                    fill={pin.dotColor}
+                    stroke="#121212"
+                    strokeWidth="1.2"
+                  />
+                  <g transform={`translate(${boxX}, ${boxY})`}>
                     <rect
                       width={boxW}
-                      height="24"
-                      rx="8"
-                      fill={pin.color}
+                      height="21"
+                      rx="5"
+                      fill="#FFFBF0"
                       stroke="#121212"
-                      strokeWidth="2"
+                      strokeWidth="1"
                     />
+                    <circle cx="9" cy="10.5" r="3" fill={pin.dotColor} />
                     <text
-                      x={boxW / 2}
-                      y="15.5"
-                      textAnchor="middle"
+                      x="17"
+                      y="14"
                       fontFamily="Space Mono, monospace"
                       fontWeight="700"
-                      fontSize="10.5"
-                      fill={pin.textColor}
+                      fontSize="10"
+                      fill="#121212"
                     >
-                      {idx + 1} · {pin.label}
+                      {pin.label}
                     </text>
                   </g>
                 </g>
               );
             })}
 
-          {/* Blackout Pass 4 Watermark */}
-          {effectivePass === 4 && (
-            <text
-              x={MARGIN_LEFT + SCORE_W / 2}
-              y={STAFF_TOP + STAFF_GAP * 2 + 6}
-              textAnchor="middle"
-              fontFamily="Syne, sans-serif"
-              fontWeight="800"
-              fontSize="26"
-              fill="rgba(18,18,18,0.16)"
-              letterSpacing="4"
-            >
-              EAR &amp; MEMORY BLACKOUT
-            </text>
-          )}
-
-          {/* Razor #FF3B7F Playhead Laser (Zero-Jank Transform Ref!) */}
+          {/* ── SINGLE #FF3B7F 1.5PX VERTICAL PLAYHEAD SPANNING BOTH STAFF & TAB ── */}
           {!forensicMode && (
-            <g
-              ref={playheadGroupRef}
-              transform={`translate(${(MARGIN_LEFT + ((demoPlayheadBeat - windowStartBeat) / windowBeats) * SCORE_W).toFixed(1)}, 0)`}
-            >
+            <g ref={playheadGroupRef} style={{ willChange: 'transform' }}>
               <line
                 x1="0"
-                y1="26"
+                y1={56}
                 x2="0"
-                y2={SVG_H - 18}
+                y2={TAB_BOTTOM + 14}
                 stroke="#FF3B7F"
-                strokeWidth="3"
+                strokeWidth="1.75"
               />
               <polygon
-                points="-7,22 7,22 0,33"
+                points="-5,54 5,54 0,62"
                 fill="#FF3B7F"
-                stroke="#121212"
-                strokeWidth="1.8"
               />
-              <circle cx="0" cy={SVG_H - 18} r="4.5" fill="#FF3B7F" stroke="#121212" strokeWidth="1.8" />
+              <circle
+                cx="0"
+                cy={TAB_BOTTOM + 14}
+                r="3.5"
+                fill="#FF3B7F"
+              />
             </g>
           )}
         </svg>

@@ -8,25 +8,22 @@ import {
 } from '../audio/backingTrackEngine';
 import { AMP_PRESETS, type AmpPresetId } from '../audio/guitarAmpRig';
 import { useAudioEngineControl } from '../context/AudioEngineContext';
-import {
-  getChapterForCourse,
-  type CoursePracticeMode,
-  type CourseTabNote,
-  type GuitarCourse,
+import type {
+  CoursePracticeMode,
+  CourseTabNote,
+  GuitarCourse,
 } from '../data/guitarCourses';
 import { HoldNoteScorer } from '../dsp/holdScorer';
 import { savePracticeSession } from '../storage/db';
 import type { LessonNoteStatus, LessonTimelineNote } from '../types/lesson';
 import { PASS_ACCURACY_THRESHOLD, type CourseMasteryRecord } from '../utils/courseProgress';
 import { MamboMascotSvg } from './MamboMascot';
-import {
-  MinimalScoreCanvasPixi,
-  type HiddenDifficulty,
-  type NotationMode,
-  type StageMotionSnapshot,
-} from './MinimalScoreCanvasPixi';
+import type { HiddenDifficulty, StageMotionSnapshot } from './MinimalScoreCanvasPixi';
+import { NeoArcadeStage } from './NeoArcadeStage';
 import { RisoEngravedScore, type VanishPass } from './RisoEngravedScore';
 import { RisoPerspectiveNeck } from './RisoPerspectiveNeck';
+
+export type StageLensId = 'arcade' | 'staff' | 'neck';
 
 export interface AttemptOutcome {
   passed: boolean;
@@ -37,6 +34,7 @@ export interface AttemptOutcome {
 interface CourseStageViewProps {
   course: GuitarCourse;
   initialMode?: CoursePracticeMode;
+  initialLens?: StageLensId;
   initialDetailOpen?: boolean;
   demoMode?: boolean;
   mastery: CourseMasteryRecord | undefined;
@@ -49,7 +47,6 @@ interface CourseStageViewProps {
   }) => AttemptOutcome;
   onSelectCourse: (course: GuitarCourse, mode?: CoursePracticeMode) => void;
   onBackToRoadmap: () => void;
-  onRunningChange?: (running: boolean) => void;
 }
 
 interface StageRunSummary {
@@ -63,7 +60,11 @@ interface StageRunSummary {
   newlyUnlockedCourse: GuitarCourse | null;
 }
 
-type StageSurfaceMode = 'riso' | 'staff' | 'tab';
+const LENS_ITEMS: ReadonlyArray<{ id: StageLensId; icon: string; label: string }> = [
+  { id: 'arcade', icon: '🕹️', label: 'ARCADE' },
+  { id: 'staff', icon: '🎼', label: 'STAFF+TAB' },
+  { id: 'neck', icon: '🎸', label: '3D NECK' },
+];
 
 const MODE_ITEMS: ReadonlyArray<{ id: CoursePracticeMode; label: string }> = [
   { id: 'play', label: 'PLAY' },
@@ -131,6 +132,7 @@ const STOMPBOXES: readonly StompboxDef[] = [
 export function CourseStageView({
   course,
   initialMode = 'play',
+  initialLens = 'arcade',
   initialDetailOpen = false,
   demoMode = false,
   mastery,
@@ -139,7 +141,6 @@ export function CourseStageView({
   onRecordAttempt,
   onSelectCourse,
   onBackToRoadmap,
-  onRunningChange,
 }: CourseStageViewProps) {
   const {
     isListening,
@@ -147,14 +148,13 @@ export function CourseStageView({
     ampSettings,
     detectionRef,
     start,
+    stop,
     updateAmpSettings,
     setInputGated,
     resetDsp,
   } = useAudioEngineControl();
 
-  const chapter = useMemo(() => getChapterForCourse(course), [course]);
-
-  const [surfaceMode, setSurfaceMode] = useState<StageSurfaceMode>('riso');
+  const [lens, setLens] = useState<StageLensId>(initialLens);
   const [mode, setMode] = useState<CoursePracticeMode>(initialMode);
   const [bpm, setBpm] = useState<number>(course.tempoBpm);
   const [grooveStyle, setGrooveStyle] = useState<GrooveStyleId>(course.defaultGroove);
@@ -170,7 +170,7 @@ export function CourseStageView({
   const [loopRange, setLoopRange] = useState<
     'all' | { startBar: number; endBar: number }
   >('all');
-  const [autoSpeedUp, setAutoSpeedUp] = useState<boolean>(true);
+  const [autoSpeedUp] = useState<boolean>(true);
   const [hiddenDifficulty, setHiddenDifficulty] =
     useState<HiddenDifficulty>('ghost-passing');
 
@@ -186,8 +186,7 @@ export function CourseStageView({
   const shadowCancelledRef = useRef<boolean>(false);
 
   // Direct DOM refs for live cents needle (zero per-frame React re-renders)
-  const liveNoteTextRef = useRef<HTMLSpanElement | null>(null);
-  const liveCentsTextRef = useRef<HTMLSpanElement | null>(null);
+  const liveCentsLabelRef = useRef<HTMLSpanElement | null>(null);
   const centsNeedleDotRef = useRef<HTMLSpanElement | null>(null);
 
   const stopEverything = useCallback(() => {
@@ -208,11 +207,8 @@ export function CourseStageView({
   }, [setInputGated]);
 
   useEffect(() => {
-    onRunningChange?.(runState === 'running');
-  }, [onRunningChange, runState]);
-
-  useEffect(() => {
     stopEverything();
+    setLens(initialLens);
     setMode(initialMode);
     setBpm(course.tempoBpm);
     setGrooveStyle(course.defaultGroove);
@@ -225,7 +221,7 @@ export function CourseStageView({
     noteStatusRef.current = {};
     motionRef.current = { ...INITIAL_MOTION };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [course.id, initialMode, initialDetailOpen]);
+  }, [course.id, initialLens, initialMode, initialDetailOpen]);
 
   useEffect(() => {
     return () => {
@@ -233,21 +229,21 @@ export function CourseStageView({
       transportRef.current?.stop();
       if (rafRef.current) cancelAnimationFrame(rafRef.current);
       setInputGated(false);
-      onRunningChange?.(false);
     };
-  }, [onRunningChange, setInputGated]);
+  }, [setInputGated]);
 
   // Direct DOM cents needle update at 15Hz when live listening
   useEffect(() => {
     if (!isListening || runState !== 'running') return undefined;
     const id = window.setInterval(() => {
       const det = detectionRef.current;
-      if (liveNoteTextRef.current) {
-        liveNoteTextRef.current.textContent = det.label ?? '—';
-      }
-      if (liveCentsTextRef.current) {
-        const c = Math.round(det.centsOffset ?? 0);
-        liveCentsTextRef.current.textContent = det.label ? `${c >= 0 ? '+' : ''}${c}¢` : '0¢';
+      const c = Math.round(det.centsOffset ?? 0);
+      if (liveCentsLabelRef.current) {
+        liveCentsLabelRef.current.textContent = det.label
+          ? Math.abs(c) <= 5
+            ? `DEAD CENTER ${c >= 0 ? `+${c}¢` : `${c}¢`}`
+            : `${det.label} ${c >= 0 ? `+${c}¢` : `${c}¢`}`
+          : 'LISTENING';
       }
       if (centsNeedleDotRef.current) {
         const clamped = Math.max(-50, Math.min(50, det.centsOffset ?? 0));
@@ -259,7 +255,6 @@ export function CourseStageView({
 
   useEffect(() => {
     if (runState === 'running' && motionRef.current.shadowPhase !== 'listen') {
-      // Respect App Sound Policy: mute melodic guide guitar during live mic scoring
       transportRef.current?.updateLiveOptions({ grooveStyle, guideGuitar: 'off' });
     } else if (runState === 'preview') {
       transportRef.current?.updateLiveOptions({ grooveStyle, guideGuitar: 'full' });
@@ -520,7 +515,6 @@ export function CourseStageView({
         });
       };
 
-      // App Sound Policy: never mix melodic guide guitar with live mic scoring
       const transport = new BackingTransport({
         bpm: effectiveBpm,
         beatsPerBar: course.beatsPerBar,
@@ -577,7 +571,6 @@ export function CourseStageView({
           }
         }
         m.activeTargetNoteId = nextActive;
-        // Discrete state update ONLY on note transitions (zero per-frame re-renders!)
         if (nextActive !== lastActiveId) {
           lastActiveId = nextActive;
           setActiveNoteId(nextActive);
@@ -616,391 +609,214 @@ export function CourseStageView({
     ],
   );
 
-  // Determine active, next, and upcoming notes for Tier B 3D Perspective Neck
-  const neckNotes = useMemo(() => {
+  // Determine strict 2-dot Focus (Current + Next) for Lens 3 (3D Perspective Neck)
+  const neckFocus = useMemo(() => {
     const windowEndBar = Math.min(course.totalBars, windowStartBar + 3);
     const inWin = course.notes.filter(
       (n) => n.bar >= windowStartBar && n.bar <= windowEndBar,
     );
-    if (inWin.length === 0) {
-      return { active: null, next: null, upcoming: [] as CourseTabNote[] };
-    }
+    if (inWin.length === 0) return { active: null, next: null };
 
     let activeIdx = -1;
     if (activeNoteId) {
       activeIdx = inWin.findIndex((n) => n.id === activeNoteId);
     }
     if (activeIdx < 0 && demoMode && runState === 'idle') {
-      // Showcase Bar 3 Gmaj7 anchor (Fret 7 B3 -> Fret 5 B3 -> Fret 4 G3)
       activeIdx = inWin.findIndex((n) => n.bar === windowStartBar + 2);
     }
     if (activeIdx < 0) activeIdx = 0;
 
-    const active = inWin[activeIdx] ?? null;
-    const next = inWin[activeIdx + 1] ?? inWin[0] ?? null;
-    const upcoming = inWin.slice(activeIdx + 2);
-    return { active, next, upcoming };
+    return {
+      active: inWin[activeIdx] ?? null,
+      next: inWin[activeIdx + 1] ?? inWin[0] ?? null,
+    };
   }, [activeNoteId, course.notes, course.totalBars, demoMode, runState, windowStartBar]);
 
   const completedModes = mastery?.completedModes ?? [];
-  const pixiNotation: NotationMode = surfaceMode === 'tab' ? 'tab' : 'staff';
   const isPlayingChromeDimmed = runState === 'running';
-
+  const ampOn = ampSettings.enabled || demoMode;
+  const micOn = isListening || demoMode;
   const accuracyPct = summary ? Math.round(summary.accuracy * 100) : 94;
   const displayStars = summary ? summary.starsEarned : 3;
 
   return (
-    <div className="h-[calc(100vh-56px)] w-full bg-[#FFFBF0] riso-paper-grain px-4 md:px-6 py-3 flex flex-col overflow-hidden">
-      <div className="max-w-[1380px] w-full mx-auto flex-1 min-h-0 flex flex-col gap-3">
-        {detailOpen ? (
-          /* ══════════════════════════════════════════════════════════════════════════════════
-             SCREEN 03: FORENSIC PITCH RIBBON OVER RE-MATERIALIZED SCORE + 3-PEDAL STOMPBOX RACK
-             ══════════════════════════════════════════════════════════════════════════════════ */
-          <>
-            {/* Compact Celebration Stamp Strip + Tiny Mambo Buddy Sticker (<= 8 words!) */}
-            <header className="neo-card bg-[#D8FF2E] px-4 py-2.5 flex items-center justify-between gap-3 flex-wrap shrink-0">
-              <div className="flex items-center gap-3 flex-wrap">
-                <div className="flex items-center gap-2">
-                  <span className="neo-stamp bg-[#121212] text-[#D8FF2E]">
-                    ★ {accuracyPct}% IN POCKET!
-                  </span>
-                  <span className="neo-stamp bg-white text-[#121212]">
-                    {'★'.repeat(displayStars)}{'☆'.repeat(3 - displayStars)} {displayStars}/3 PLECTRUMS
-                  </span>
-                  <span className="neo-stamp bg-[#2B59FF] text-white">
-                    +2.1¢ · 14× FLOW
-                  </span>
-                </div>
+    <div className="h-full flex flex-col bg-[#FFFBF0] overflow-hidden">
+      {/* ══════════════════════════════════════════════════════════════════
+          STRATUM 1: ONE UNIFIED 56px STAGE HEADER BAR (§2.1 — ZERO DUPLICATE HEADERS!)
+         ══════════════════════════════════════════════════════════════════ */}
+      <header
+        className={`h-[56px] shrink-0 bg-[#FFFBF0] border-b-[2.5px] border-[#121212] px-4 flex items-center justify-between gap-3 transition-opacity duration-300 z-30 ${
+          isPlayingChromeDimmed ? 'opacity-25 hover:opacity-100' : 'opacity-100'
+        }`}
+      >
+        {/* Left: [← MAP] · [01] Stage Badge · Course Title · Key · BPM (Printed ONCE!) */}
+        <div className="flex items-center gap-2.5 min-w-0">
+          <button
+            type="button"
+            onClick={onBackToRoadmap}
+            className="neo-pill-btn px-2.5 py-1 bg-[#FFFBF0] hover:bg-[#F4ECDC] font-mono text-[11px] font-bold text-[#121212] shrink-0"
+          >
+            ← MAP
+          </button>
 
-                {/* Mambo Buddy Post-Take Sticker (strictly <= 8 words!) */}
-                <div className="hidden md:inline-flex items-center gap-2 px-3 py-1 rounded-2xl bg-white border-2 border-[#121212] shadow-brutal-xs">
-                  <MamboMascotSvg mood="celebrate" size={34} className="shrink-0" />
-                  <span className="font-display text-xs font-extrabold text-[#121212]">
-                    &ldquo;Bar 3 vibrato: pure butter (+2¢)!&rdquo;
-                  </span>
-                </div>
+          <span className="px-2 py-0.5 rounded-lg bg-[#121212] text-[#D8FF2E] font-mono text-[11px] font-bold shrink-0">
+            {String(course.order).padStart(2, '0')}
+          </span>
+
+          <h1 className="font-syne text-[17px] font-extrabold text-[#121212] tracking-tight truncate">
+            {course.title}
+          </h1>
+
+          <span className="hidden xl:inline-flex items-center px-2 py-0.5 rounded-md bg-[#F4ECDC] border border-[#121212]/25 font-mono text-[11px] font-bold text-[#57534A] shrink-0">
+            {course.keySignature} · {bpm} BPM
+          </span>
+        </div>
+
+        {/* Center: Live Pitch Reticle Pill + Flow Stamp */}
+        <div className="hidden lg:flex items-center gap-2 shrink-0">
+          <div className="inline-flex items-center gap-2 px-2.5 py-1 rounded-full bg-[#FFFBF0] border-[2px] border-[#121212]">
+            <span
+              ref={liveCentsLabelRef}
+              className="font-mono text-[10.5px] font-bold text-[#121212] whitespace-nowrap"
+            >
+              DEAD CENTER +2¢
+            </span>
+            <div className="flex items-center gap-1">
+              <span className="font-mono text-[9px] text-[#57534A]">♭</span>
+              <div className="relative w-12 h-2 rounded-full bg-[#F4ECDC] border border-[#121212]">
+                <div className="absolute left-1/2 top-0 bottom-0 w-px bg-[#121212]/40" />
+                <span
+                  ref={centsNeedleDotRef}
+                  className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-2.5 h-2.5 rounded-full bg-[#1CE088] border border-[#121212]"
+                  style={{ left: '53%' }}
+                />
               </div>
+              <span className="font-mono text-[9px] text-[#57534A]">♯</span>
+            </div>
+          </div>
 
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => setDetailOpen(false)}
-                  className="neo-btn-paper px-3.5 py-1.5 text-[11px] font-mono uppercase"
-                >
-                  ↻ Replay
-                </button>
-                <button
-                  type="button"
-                  onClick={() =>
-                    nextCourse && (isNextUnlocked || demoMode)
-                      ? onSelectCourse(nextCourse, 'play')
-                      : onBackToRoadmap()
-                  }
-                  className="neo-btn-cobalt px-4 py-1.5 text-[11px] font-mono uppercase"
-                >
-                  Next Island &rarr;
-                </button>
-              </div>
-            </header>
+          <span className="px-2.5 py-1 rounded-full bg-[#D8FF2E] border-[2px] border-[#121212] font-mono text-[10.5px] font-bold text-[#121212] tabular-nums">
+            14× FLOW
+          </span>
+        </div>
 
-            {/* Upper Panel: Re-Materialized 4-Bar Score with Continuous Played Pitch & Timing Ribbon */}
-            <div className="h-[345px] shrink-0">
-              <RisoEngravedScore
-                course={course}
-                practiceMode="play"
-                hiddenDifficulty="ghost-passing"
-                vanishPass={1}
-                loopRange="all"
-                selectedWindowStartBar={windowStartBar}
-                onChangeWindowStartBar={setWindowStartBar}
-                onSelectBar={handleSelectBar}
-                runState="idle"
+        {/* Right: Single-Focus 3-Lens Switcher + Compact AMP / MIC LEDs */}
+        <div className="flex items-center gap-2 shrink-0">
+          <div
+            className="inline-flex items-center p-0.5 rounded-xl bg-[#F4ECDC] border-[2px] border-[#121212]"
+            role="tablist"
+            aria-label="Single-focus stage lens"
+          >
+            {LENS_ITEMS.map((item) => {
+              const active = !detailOpen && lens === item.id;
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  role="tab"
+                  aria-selected={active}
+                  onClick={() => {
+                    setDetailOpen(false);
+                    setLens(item.id);
+                  }}
+                  className={`px-2.5 py-1 rounded-lg font-mono text-[10.5px] font-bold transition-colors flex items-center gap-1 whitespace-nowrap ${
+                    active
+                      ? 'bg-[#121212] text-[#D8FF2E]'
+                      : 'text-[#57534A] hover:text-[#121212]'
+                  }`}
+                >
+                  <span aria-hidden>{item.icon}</span>
+                  <span>{item.label}</span>
+                </button>
+              );
+            })}
+          </div>
+
+          <button
+            type="button"
+            onClick={() => void updateAmpSettings({ enabled: !ampSettings.enabled })}
+            className={`px-2 py-1 rounded-lg border-[2px] border-[#121212] font-mono text-[10px] font-bold flex items-center gap-1 ${
+              ampOn ? 'bg-[#FF8A00] text-[#121212]' : 'bg-[#FFFBF0] text-[#57534A]'
+            }`}
+          >
+            <span className={`w-1.5 h-1.5 rounded-full border border-[#121212] ${ampOn ? 'bg-[#D8FF2E]' : 'bg-[#F4ECDC]'}`} />
+            AMP
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              if (isListening) stop();
+              else void start();
+            }}
+            className={`px-2 py-1 rounded-lg border-[2px] border-[#121212] font-mono text-[10px] font-bold flex items-center gap-1 ${
+              micOn ? 'bg-[#D8FF2E] text-[#121212]' : 'bg-[#FFFBF0] text-[#121212]'
+            }`}
+          >
+            <span className={`w-1.5 h-1.5 rounded-full border border-[#121212] ${micOn ? 'bg-[#1CE088]' : 'bg-[#FF3B7F]'}`} />
+            {micOn ? 'MIC ON' : 'MIC'}
+          </button>
+        </div>
+      </header>
+
+      {/* ══════════════════════════════════════════════════════════════════
+          STRATUM 2: SINGLE-FOCUS FULL STAGE OR POST-TAKE FORENSIC REVIEW
+         ══════════════════════════════════════════════════════════════════ */}
+      {!detailOpen ? (
+        <>
+          {/* ONE Generous Full-Stage Canvas — NEVER stack two views vertically! */}
+          <div className="flex-1 min-h-0 px-4 py-3 max-w-[1440px] mx-auto w-full flex flex-col">
+            {lens === 'arcade' ? (
+              <NeoArcadeStage
+                notes={course.notes}
+                barChords={course.barChords}
+                totalBars={course.totalBars}
+                beatsPerBar={course.beatsPerBar}
+                practiceMode={mode}
+                hiddenDifficulty={hiddenDifficulty}
+                loopRange={loopRange}
                 motionRef={motionRef}
                 noteStatusRef={noteStatusRef}
-                demoMode={demoMode}
-                forensicMode
+                onSelectBar={handleSelectBar}
+                demoShowcase={demoMode}
               />
-            </div>
-
-            {/* Lower Panel: 03's Signature 3-Pedal Stompbox Rack + Compact Groove Selector */}
-            <div className="grid grid-cols-1 lg:grid-cols-12 gap-3 flex-1 min-h-0">
-              {/* Left 8 cols: 3 Clickable 3D Guitar Stompboxes */}
-              <section className="lg:col-span-8 neo-card bg-[#F4ECDC] p-3.5 flex flex-col justify-between gap-2.5">
-                <div className="flex items-center justify-between gap-2">
-                  <div className="flex items-center gap-2">
-                    <span className="neo-stamp bg-[#121212] text-[#D8FF2E]">
-                      3-PEDAL STOMPBOX RACK
-                    </span>
-                    <span className="font-mono text-[11px] font-bold text-[#121212]">
-                      WASM AMP MONITOR
-                    </span>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => void updateAmpSettings({ enabled: !ampSettings.enabled })}
-                    className={`px-3 py-1 text-[10px] font-mono uppercase ${
-                      ampSettings.enabled || demoMode ? 'neo-btn-lime' : 'neo-btn-paper'
-                    }`}
-                  >
-                    {ampSettings.enabled || demoMode ? '● RIG LIVE' : '○ BYPASS'}
-                  </button>
-                </div>
-
-                <div className="grid grid-cols-3 gap-3 flex-1">
-                  {STOMPBOXES.map((pedal) => {
-                    const isActive = activeStomp === pedal.id;
-                    return (
-                      <button
-                        key={pedal.id}
-                        type="button"
-                        onClick={() => handleSelectStomp(pedal.id)}
-                        className={`rounded-2xl border-[2.5px] border-[#121212] p-3 text-left flex flex-col justify-between gap-2 transition-all ${
-                          isActive
-                            ? 'shadow-brutal -translate-y-0.5 ring-2 ring-[#121212]'
-                            : 'shadow-brutal-xs opacity-90 hover:opacity-100'
-                        }`}
-                        style={{ backgroundColor: pedal.bg, color: pedal.text }}
-                      >
-                        <div className="flex items-center justify-between">
-                          <span
-                            className="w-3 h-3 rounded-full border-2 border-[#121212]"
-                            style={{
-                              backgroundColor: isActive ? pedal.led : 'rgba(255,255,255,0.35)',
-                            }}
-                          />
-                          <span className="font-mono text-[9px] font-bold uppercase">
-                            {isActive ? 'ACTIVE' : 'BYPASS'}
-                          </span>
-                        </div>
-
-                        {/* Tactile Rotary Drive & Room Knobs */}
-                        <div className="flex items-center justify-around py-0.5">
-                          {[
-                            { label: 'DRV', val: pedal.drivePct, rot: -45 + pedal.drivePct * 1.1 },
-                            { label: 'AIR', val: pedal.roomPct, rot: -45 + pedal.roomPct * 1.1 },
-                          ].map((k) => (
-                            <div key={k.label} className="flex flex-col items-center gap-1">
-                              <div
-                                className="w-8 h-8 rounded-full bg-[#121212] border-2 border-[#FFFBF0] flex items-start justify-center pt-1"
-                                style={{ transform: `rotate(${Math.round(k.rot)}deg)` }}
-                              >
-                                <span className="w-1 h-2.5 rounded-full bg-[#D8FF2E]" />
-                              </div>
-                              <span className="font-mono text-[8.5px] font-bold opacity-90">
-                                {k.label} {k.val}%
-                              </span>
-                            </div>
-                          ))}
-                        </div>
-
-                        <div>
-                          <div className="font-syne text-sm font-extrabold leading-tight">
-                            {pedal.name}
-                          </div>
-                          <div className="font-mono text-[9px] font-bold opacity-85">
-                            {pedal.tag}
-                          </div>
-                        </div>
-
-                        <div className="w-full py-1 rounded-xl bg-[#FFFBF0] text-[#121212] border-2 border-[#121212] font-mono text-[10px] font-bold text-center">
-                          {isActive ? 'STOMPED ✓' : 'STOMP'}
-                        </div>
-                      </button>
-                    );
-                  })}
-                </div>
-              </section>
-
-              {/* Right 4 cols: Compact Backing Groove Engine & Mix */}
-              <section className="lg:col-span-4 neo-card bg-white p-3.5 flex flex-col justify-between gap-2.5">
-                <div className="flex items-center justify-between">
-                  <span className="neo-stamp bg-[#2B59FF] text-white">BACKING GROOVE</span>
-                  <span className="font-mono text-[11px] font-bold text-[#121212]">
-                    {bpm} BPM
-                  </span>
-                </div>
-
-                <div className="grid grid-cols-2 gap-1.5">
-                  {GROOVE_STYLE_META.slice(0, 6).map((g) => (
-                    <button
-                      key={g.id}
-                      type="button"
-                      onClick={() => setGrooveStyle(g.id)}
-                      className={`px-2.5 py-2 rounded-xl border-2 border-[#121212] font-mono text-[10px] font-bold text-left transition-all ${
-                        grooveStyle === g.id
-                          ? 'bg-[#D8FF2E] text-[#121212] shadow-brutal-xs'
-                          : 'bg-[#FFFBF0] text-[#423E37] hover:bg-[#F4ECDC]'
-                      }`}
-                    >
-                      {g.shortLabel}
-                    </button>
-                  ))}
-                </div>
-
-                <div className="space-y-2 pt-1 border-t-2 border-dashed border-[#121212]/20">
-                  <div className="flex items-center justify-between font-mono text-[10px] font-bold">
-                    <span>MIX {volumePct}%</span>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setGuideGuitar((g) => (g === 'off' ? 'soft' : g === 'soft' ? 'full' : 'off'))
-                      }
-                      className="px-2 py-0.5 rounded-lg border-2 border-[#121212] bg-[#F4ECDC] text-[#121212]"
-                    >
-                      GUIDE: {guideGuitar.toUpperCase()}
-                    </button>
-                  </div>
-                  <input
-                    type="range"
-                    min={0}
-                    max={100}
-                    value={volumePct}
-                    onChange={(e) => handleVolumeChange(Number(e.target.value))}
-                    className="w-full accent-[#2B59FF]"
-                    aria-label="Backing mix level"
-                  />
-                </div>
-              </section>
-            </div>
-          </>
-        ) : (
-          /* ══════════════════════════════════════════════════════════════════════════════════
-             SCREEN 02: THE TWO-TIER HARMONIZED SOUNDSTAGE (0 SENTENCES · 0 MAMBO CHAT)
-             ══════════════════════════════════════════════════════════════════════════════════ */
-          <>
-            {/* Compact Stage Header (Auto-dims to 25% opacity during live play!) */}
-            <header
-              className={`flex items-center justify-between gap-3 flex-wrap shrink-0 transition-opacity duration-300 ${
-                isPlayingChromeDimmed ? 'opacity-25 hover:opacity-100' : 'opacity-100'
-              }`}
-            >
-              <div className="flex items-center gap-2.5 min-w-0">
-                <span className="neo-stamp bg-[#121212] text-[#D8FF2E]">
-                  STG {String(course.order).padStart(2, '0')}
-                </span>
-                <h1 className="font-syne text-xl md:text-2xl font-extrabold text-[#121212] tracking-tight truncate">
-                  {course.title}
-                </h1>
-                <span className="hidden sm:inline-flex neo-stamp bg-[#F4ECDC] text-[#121212]">
-                  {course.keySignature} &middot; {course.totalBars}B
-                </span>
-              </div>
-
-              <div className="flex items-center gap-2">
-                {/* Live Pitch Cents Gauge Pill (Direct DOM Ref) */}
-                <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-white border-2 border-[#121212] shadow-brutal-xs">
-                  <span
-                    ref={liveNoteTextRef}
-                    className="font-syne text-xs font-extrabold text-[#121212] w-7"
-                  >
-                    {neckNotes.active?.label ?? 'F#4'}
-                  </span>
-                  <span
-                    ref={liveCentsTextRef}
-                    className="font-mono text-[11px] font-bold text-[#1CE088] w-8 text-right tabular-nums"
-                  >
-                    +2¢
-                  </span>
-                  <div className="relative w-16 h-2 rounded-full bg-[#F4ECDC] border border-[#121212]">
-                    <span className="absolute left-1/2 top-0 bottom-0 w-0.5 bg-[#121212]/40 -translate-x-1/2" />
-                    <span
-                      ref={centsNeedleDotRef}
-                      className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-2.5 h-2.5 rounded-full bg-[#D8FF2E] border-[1.8px] border-[#121212]"
-                      style={{ left: '53%' }}
-                    />
-                  </div>
-                </div>
-
-                {/* Flow Continuity Stamp */}
-                <span className="neo-stamp bg-[#D8FF2E] text-[#121212]">
-                  14&times; FLOW
-                </span>
-
-                {/* Compact Riso / Pixi Surface Toggle */}
-                <div className="inline-flex items-center gap-0.5 p-0.5 rounded-xl bg-[#F4ECDC] border-2 border-[#121212]">
-                  {(
-                    [
-                      { id: 'riso', label: 'RISO' },
-                      { id: 'staff', label: 'PIXI' },
-                    ] as const
-                  ).map((opt) => (
-                    <button
-                      key={opt.id}
-                      type="button"
-                      onClick={() => setSurfaceMode(opt.id)}
-                      className={`px-2.5 py-0.5 rounded-lg font-mono text-[10px] font-bold transition-colors ${
-                        (opt.id === 'riso' && surfaceMode === 'riso') ||
-                        (opt.id === 'staff' && surfaceMode !== 'riso')
-                          ? 'bg-[#121212] text-[#D8FF2E]'
-                          : 'text-[#57534A] hover:text-[#121212]'
-                      }`}
-                    >
-                      {opt.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            </header>
-
-            {/* TIER A (52% H): Stationary 4-Bar Riso Engraved Contour Score */}
-            <div className="flex-[52] min-h-0 flex flex-col justify-center">
-              {surfaceMode === 'riso' ? (
-                <RisoEngravedScore
-                  course={course}
-                  practiceMode={mode}
-                  hiddenDifficulty={hiddenDifficulty}
-                  vanishPass={vanishPass}
-                  onChangeVanishPass={setVanishPass}
-                  loopRange={loopRange}
-                  selectedWindowStartBar={windowStartBar}
-                  onChangeWindowStartBar={setWindowStartBar}
-                  onSelectBar={handleSelectBar}
-                  runState={runState}
-                  motionRef={motionRef}
-                  noteStatusRef={noteStatusRef}
-                  demoMode={demoMode}
-                />
-              ) : (
-                <div className="neo-card bg-[#121212] p-2.5">
-                  <MinimalScoreCanvasPixi
-                    notes={course.notes}
-                    barChords={course.barChords}
-                    totalBars={course.totalBars}
-                    beatsPerBar={course.beatsPerBar}
-                    accentHex={chapter.accentHex}
-                    notationMode={pixiNotation}
-                    practiceMode={mode}
-                    hiddenDifficulty={hiddenDifficulty}
-                    loopRange={loopRange}
-                    motionRef={motionRef}
-                    detectionRef={detectionRef}
-                    noteStatusRef={noteStatusRef}
-                    onSelectBar={handleSelectBar}
-                  />
-                </div>
-              )}
-            </div>
-
-            {/* TIER B (36% H): 1:1 Risograph 3D Perspective Guitar Neck (Frets 0-17) */}
-            <div className="flex-[36] min-h-0 flex flex-col justify-center">
+            ) : lens === 'staff' ? (
+              <RisoEngravedScore
+                course={course}
+                mode={mode}
+                vanishPass={vanishPass}
+                onChangeVanishPass={setVanishPass}
+                windowStartBar={windowStartBar}
+                onWindowStartBarChange={setWindowStartBar}
+                loopRange={loopRange}
+                runState={runState}
+                motionRef={motionRef}
+                noteStatusRef={noteStatusRef}
+                activeNoteId={activeNoteId}
+                onSelectBar={handleSelectBar}
+                forensicMode={false}
+                demoMode={demoMode}
+              />
+            ) : (
               <RisoPerspectiveNeck
                 course={course}
-                activeNote={neckNotes.active}
-                nextNote={neckNotes.next}
-                upcomingNotes={neckNotes.upcoming}
-                bleedStringNum={demoMode && runState === 'idle' ? 3 : null}
+                activeNote={neckFocus.active}
+                nextNote={neckFocus.next}
+                bleedStringNum={null}
               />
-            </div>
+            )}
+          </div>
 
-            {/* TIER C (12% H): Single Ultra-Clean Transport & Mode Strip */}
-            <footer className="neo-card bg-white px-4 py-2 flex items-center justify-between gap-3 flex-wrap shrink-0">
-              {/* Left: Start / Hear / BPM */}
+          {/* STRATUM 3: Compact 58px Bottom Transport Strip (Zero Mambo Buddy / Zero TIP Footers!) */}
+          <footer className="h-[58px] shrink-0 px-4 pb-3 max-w-[1440px] mx-auto w-full flex items-center">
+            <div className="w-full h-full neo-card bg-[#FFFBF0] px-3 flex items-center justify-between gap-3">
+              {/* Left: Start Groove + Hear + BPM */}
               <div className="flex items-center gap-2">
                 {runState === 'running' ? (
                   <button
                     type="button"
                     onClick={stopEverything}
-                    className="neo-btn-magenta px-5 py-2 text-xs font-syne tracking-wide"
+                    className="px-4 py-1.5 rounded-xl border-[2.2px] border-[#121212] bg-[#FF3B7F] text-white font-syne text-xs font-extrabold tracking-wide shadow-brutal-xs"
                   >
                     ■ STOP
                   </button>
@@ -1008,105 +824,305 @@ export function CourseStageView({
                   <button
                     type="button"
                     onClick={() => void startTimedRun()}
-                    className="neo-btn-lime px-5 py-2 text-xs font-syne tracking-wide"
+                    className="px-4 py-1.5 rounded-xl border-[2.2px] border-[#121212] bg-[#D8FF2E] text-[#121212] font-syne text-xs font-extrabold tracking-wide shadow-brutal-xs hover:bg-[#C7F21D]"
                   >
-                    ▶ START
+                    ▶ START GROOVE
                   </button>
                 )}
 
-                {runState === 'preview' ? (
-                  <button
-                    type="button"
-                    onClick={stopEverything}
-                    className="neo-btn-amber px-3.5 py-2 text-[11px] font-mono"
-                  >
-                    ■ STOP
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    disabled={runState === 'running'}
-                    onClick={startSoundPreview}
-                    className="neo-btn-paper px-3.5 py-2 text-[11px] font-mono"
-                  >
-                    ♪ HEAR
-                  </button>
-                )}
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (runState === 'preview') stopEverything();
+                    else startSoundPreview();
+                  }}
+                  className={`px-3 py-1.5 rounded-xl border-[2px] border-[#121212] font-mono text-[11px] font-bold transition-colors ${
+                    runState === 'preview'
+                      ? 'bg-[#2B59FF] text-white'
+                      : 'bg-[#FFFBF0] text-[#121212] hover:bg-[#F4ECDC]'
+                  }`}
+                >
+                  {runState === 'preview' ? '■ MUTE' : '♪ HEAR'}
+                </button>
 
-                <div className="inline-flex items-center gap-1.5 px-2 py-1 rounded-xl bg-[#F4ECDC] border-2 border-[#121212]">
+                <div className="inline-flex items-center gap-1.5 px-2 py-1 rounded-xl bg-[#FFFBF0] border-[2px] border-[#121212]">
                   <button
                     type="button"
-                    disabled={runState === 'running'}
-                    onClick={() => setBpm((b) => Math.max(40, b - 5))}
-                    className="w-6 h-6 rounded-lg bg-white border-2 border-[#121212] font-mono font-bold text-xs hover:bg-[#D8FF2E]"
+                    onClick={() => setBpm((b) => Math.max(40, b - 4))}
+                    className="w-5 h-5 rounded border border-[#121212] bg-[#F4ECDC] font-mono text-xs font-bold leading-none hover:bg-[#D8FF2E]"
                     aria-label="Decrease BPM"
                   >
                     −
                   </button>
-                  <span className="font-mono text-xs font-bold text-[#121212] tabular-nums min-w-[58px] text-center">
+                  <span className="font-mono text-[11px] font-bold tabular-nums min-w-[54px] text-center">
                     {bpm} BPM
                   </span>
                   <button
                     type="button"
-                    disabled={runState === 'running'}
-                    onClick={() => setBpm((b) => Math.min(160, b + 5))}
-                    className="w-6 h-6 rounded-lg bg-white border-2 border-[#121212] font-mono font-bold text-xs hover:bg-[#D8FF2E]"
+                    onClick={() => setBpm((b) => Math.min(180, b + 4))}
+                    className="w-5 h-5 rounded border border-[#121212] bg-[#F4ECDC] font-mono text-xs font-bold leading-none hover:bg-[#D8FF2E]"
                     aria-label="Increase BPM"
                   >
                     +
                   </button>
                 </div>
-
-                {mode === 'loop' && (
-                  <button
-                    type="button"
-                    onClick={() => setAutoSpeedUp((v) => !v)}
-                    className={`px-2.5 py-1.5 rounded-xl border-2 border-[#121212] font-mono text-[10px] font-bold ${
-                      autoSpeedUp ? 'bg-[#1CE088] text-[#121212]' : 'bg-white text-[#57534A]'
-                    }`}
-                  >
-                    +5% AUTO
-                  </button>
-                )}
               </div>
 
-              {/* Center: 4 Compact Practice Mode Pills */}
-              <div className="inline-flex items-center gap-1 p-1 rounded-xl bg-[#F4ECDC] border-2 border-[#121212]">
-                {MODE_ITEMS.map((item) => {
-                  const selected = mode === item.id;
-                  const done = completedModes.includes(item.id);
+              {/* Center: Practice Mode Pills */}
+              <div className="inline-flex items-center gap-1 p-0.5 rounded-xl bg-[#F4ECDC] border-[2px] border-[#121212]">
+                {MODE_ITEMS.map((m) => {
+                  const active = mode === m.id;
+                  const done = completedModes.includes(m.id);
                   return (
                     <button
-                      key={item.id}
+                      key={m.id}
                       type="button"
-                      onClick={() => handleSwitchMode(item.id)}
-                      className={`px-3 py-1 rounded-lg font-mono text-[11px] font-bold transition-all inline-flex items-center gap-1.5 ${
-                        selected
-                          ? 'bg-[#121212] text-[#D8FF2E] shadow-brutal-xs'
-                          : 'text-[#423E37] hover:text-[#121212]'
+                      onClick={() => handleSwitchMode(m.id)}
+                      className={`px-2.5 py-1 rounded-lg font-mono text-[10.5px] font-bold transition-colors ${
+                        active
+                          ? 'bg-[#121212] text-[#D8FF2E]'
+                          : 'text-[#57534A] hover:text-[#121212]'
                       }`}
                     >
-                      <span>{item.label}</span>
-                      {done && (
-                        <span className="w-1.5 h-1.5 rounded-full bg-[#1CE088]" />
-                      )}
+                      {m.label}
+                      {done ? ' ✓' : ''}
                     </button>
                   );
                 })}
               </div>
 
-              {/* Right: Pedals & Forensic Autopsy Drawer Toggle */}
+              {/* Right: Pedals & Forensic Rig Drawer Toggle */}
               <button
                 type="button"
                 onClick={() => setDetailOpen(true)}
-                className="neo-btn-cobalt px-4 py-2 text-[11px] font-mono uppercase"
+                className="px-3.5 py-1.5 rounded-xl border-[2.2px] border-[#121212] bg-[#2B59FF] text-white font-mono text-[11px] font-bold shadow-brutal-xs hover:bg-[#2147DB]"
               >
-                🎛️ PEDALS &amp; RIG
+                🎛️ PEDALS & RIG
               </button>
-            </footer>
-          </>
-        )}
-      </div>
+            </div>
+          </footer>
+        </>
+      ) : (
+        /* ══════════════════════════════════════════════════════════════════
+           SCREEN 03 (§2.6): COUPLED STAFF+TAB PITCH RIBBON + COMPACT <=215px STOMPBOXES
+           ══════════════════════════════════════════════════════════════════ */
+        <div className="flex-1 min-h-0 px-4 py-3 max-w-[1440px] mx-auto w-full flex flex-col gap-3 overflow-hidden">
+          {/* Compact Post-Take Celebration Strip (<= 8 word Mambo Buddy stamp!) */}
+          <div className="neo-card bg-[#D8FF2E] px-4 py-2 flex items-center justify-between gap-3 flex-wrap shrink-0">
+            <div className="flex items-center gap-2.5 flex-wrap">
+              <span className="px-2.5 py-1 rounded-xl bg-[#121212] text-[#D8FF2E] font-mono text-xs font-bold">
+                ★ {accuracyPct}% IN POCKET!
+              </span>
+              <span className="px-2.5 py-1 rounded-xl bg-[#FFFBF0] border-2 border-[#121212] font-mono text-xs font-bold text-[#121212]">
+                {'★'.repeat(displayStars)} {displayStars}/3 PLECTRUMS
+              </span>
+              <span className="px-2.5 py-1 rounded-xl bg-[#2B59FF] text-white border-2 border-[#121212] font-mono text-xs font-bold">
+                +2.1¢ · 14× FLOW
+              </span>
+
+              {/* Tiny Mambo Buddy Stamp — strictly 6 words! */}
+              <div className="inline-flex items-center gap-2 px-2.5 py-0.5 rounded-full bg-[#FFFBF0] border-2 border-[#121212]">
+                <MamboMascotSvg mood="hype" size={24} />
+                <span className="font-mono text-[11px] font-bold text-[#121212]">
+                  “Bar 3 vibrato: pure butter (+2¢)!”
+                </span>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setDetailOpen(false)}
+                className="px-3 py-1.5 rounded-xl border-2 border-[#121212] bg-[#FFFBF0] font-mono text-[11px] font-bold hover:bg-[#F4ECDC]"
+              >
+                ↻ BACK TO STAGE
+              </button>
+              {nextCourse && (isNextUnlocked || demoMode) && (
+                <button
+                  type="button"
+                  onClick={() => onSelectCourse(nextCourse, 'play')}
+                  className="px-3.5 py-1.5 rounded-xl border-2 border-[#121212] bg-[#2B59FF] text-white font-mono text-[11px] font-bold shadow-brutal-xs"
+                >
+                  NEXT ISLAND →
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* UPPER PANEL (58%+ height): Coupled 5-Line Staff + 6-Line TAB with Forensic Pitch Ribbon */}
+          <div className="flex-1 min-h-0">
+            <RisoEngravedScore
+              course={course}
+              mode="play"
+              vanishPass={1}
+              windowStartBar={windowStartBar}
+              onWindowStartBarChange={setWindowStartBar}
+              loopRange="all"
+              runState="results"
+              motionRef={motionRef}
+              noteStatusRef={noteStatusRef}
+              onSelectBar={handleSelectBar}
+              forensicMode={true}
+              demoMode={demoMode}
+            />
+          </div>
+
+          {/* LOWER PANEL (Strictly <= 215px tall!): Muscular Compact 3-Pedal Stompbox Rack + Backing Groove */}
+          <div className="h-[212px] max-h-[215px] shrink-0 grid grid-cols-1 lg:grid-cols-12 gap-3">
+            {/* 3-Pedal Tactile Stompbox Rack (Enlarged 42x42px Rotary Knobs, Zero Tall Empty Slabs!) */}
+            <div className="lg:col-span-8 neo-card bg-[#FFFBF0] p-3 flex flex-col justify-between h-full">
+              <div className="flex items-center justify-between gap-2 shrink-0">
+                <div className="flex items-center gap-2">
+                  <span className="px-2 py-0.5 rounded-lg bg-[#121212] text-[#D8FF2E] font-mono text-[10px] font-bold">
+                    3-PEDAL STOMPBOX RACK
+                  </span>
+                  <span className="font-mono text-[10px] font-bold text-[#57534A]">
+                    WASM AMP MONITOR
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => void updateAmpSettings({ enabled: !ampSettings.enabled })}
+                  className={`px-2.5 py-0.5 rounded-full border-2 border-[#121212] font-mono text-[10px] font-bold ${
+                    ampOn ? 'bg-[#D8FF2E] text-[#121212]' : 'bg-[#F4ECDC] text-[#57534A]'
+                  }`}
+                >
+                  {ampOn ? '● RIG LIVE' : '○ BYPASS'}
+                </button>
+              </div>
+
+              <div className="grid grid-cols-3 gap-3 flex-1 min-h-0 mt-2">
+                {STOMPBOXES.map((pedal) => {
+                  const active = activeStomp === pedal.id;
+                  return (
+                    <button
+                      key={pedal.id}
+                      type="button"
+                      onClick={() => handleSelectStomp(pedal.id)}
+                      className={`rounded-2xl border-[2.5px] border-[#121212] px-3 py-2.5 text-left flex flex-col justify-between transition-all cursor-pointer ${
+                        active
+                          ? 'border-b-[5px] -translate-y-[1px] ring-2 ring-[#D8FF2E]'
+                          : 'border-b-[3px] opacity-90 hover:opacity-100'
+                      }`}
+                      style={{ backgroundColor: pedal.bg, color: pedal.text }}
+                    >
+                      {/* Top LED + Compact Row of Enlarged 42x42px Rotary Knobs */}
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-1.5">
+                          <span
+                            className="w-2.5 h-2.5 rounded-full border-[1.8px] border-[#121212]"
+                            style={{ backgroundColor: active ? pedal.led : 'rgba(255,255,255,0.28)' }}
+                          />
+                          <span className="font-mono text-[9px] font-bold tracking-wider opacity-90">
+                            {active ? 'ACTIVE' : 'BYPASS'}
+                          </span>
+                        </div>
+
+                        {/* Two Muscular 42x42px Rotary Knobs Side-by-Side */}
+                        <div className="flex items-center gap-2.5">
+                          <div className="flex flex-col items-center">
+                            <div className="w-[42px] h-[42px] rounded-full bg-[#121212] border-2 border-[#FFFBF0] relative flex items-center justify-center shadow-sm">
+                              <span
+                                className="w-1 h-4 bg-[#D8FF2E] rounded-full origin-bottom -translate-y-1.5"
+                                style={{ transform: `rotate(${-120 + pedal.drivePct * 2.4}deg)` }}
+                              />
+                            </div>
+                            <span className="font-mono text-[8.5px] font-bold mt-0.5 opacity-95">
+                              DRV {pedal.drivePct}%
+                            </span>
+                          </div>
+                          <div className="flex flex-col items-center">
+                            <div className="w-[42px] h-[42px] rounded-full bg-[#121212] border-2 border-[#FFFBF0] relative flex items-center justify-center shadow-sm">
+                              <span
+                                className="w-1 h-4 bg-[#D8FF2E] rounded-full origin-bottom -translate-y-1.5"
+                                style={{ transform: `rotate(${-120 + pedal.roomPct * 2.4}deg)` }}
+                              />
+                            </div>
+                            <span className="font-mono text-[8.5px] font-bold mt-0.5 opacity-95">
+                              AIR {pedal.roomPct}%
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Pedal Title + Tactile Footswitch Bar */}
+                      <div className="flex items-end justify-between gap-2 mt-1">
+                        <div className="min-w-0">
+                          <div className="font-syne text-[13px] font-extrabold leading-tight truncate">
+                            {pedal.name}
+                          </div>
+                          <div className="font-mono text-[9px] font-bold opacity-80">
+                            {pedal.tag}
+                          </div>
+                        </div>
+                        <div className="px-2.5 py-1 rounded-lg bg-[#FFFBF0] border-2 border-[#121212] font-mono text-[9.5px] font-bold text-[#121212] shrink-0">
+                          {active ? 'ON ✓' : 'STOMP'}
+                        </div>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Compact Backing Groove & Mix Selector (Matches <= 215px Height!) */}
+            <div className="lg:col-span-4 neo-card bg-[#FFFBF0] p-3 flex flex-col justify-between h-full">
+              <div className="flex items-center justify-between gap-2">
+                <span className="px-2 py-0.5 rounded-lg bg-[#2B59FF] text-white border border-[#121212] font-mono text-[10px] font-bold">
+                  BACKING GROOVE
+                </span>
+                <span className="font-mono text-[11px] font-bold text-[#121212] tabular-nums">
+                  {bpm} BPM
+                </span>
+              </div>
+
+              <div className="grid grid-cols-2 gap-1.5 my-1.5">
+                {GROOVE_STYLE_META.map((g) => (
+                  <button
+                    key={g.id}
+                    type="button"
+                    onClick={() => setGrooveStyle(g.id)}
+                    className={`px-2.5 py-1.5 rounded-lg border-[1.8px] border-[#121212] font-mono text-[10.5px] font-bold text-left transition-colors ${
+                      grooveStyle === g.id
+                        ? 'bg-[#D8FF2E] text-[#121212]'
+                        : 'bg-[#FFFBF0] text-[#121212] hover:bg-[#F4ECDC]'
+                    }`}
+                  >
+                    {g.shortLabel}
+                  </button>
+                ))}
+              </div>
+
+              <div className="pt-2 border-t border-dashed border-[#121212]/25 flex items-center gap-3">
+                <div className="flex-1">
+                  <div className="flex items-center justify-between font-mono text-[10px] font-bold text-[#57534A] mb-0.5">
+                    <span>MIX</span>
+                    <span>{volumePct}%</span>
+                  </div>
+                  <input
+                    type="range"
+                    min={0}
+                    max={100}
+                    value={volumePct}
+                    onChange={(e) => handleVolumeChange(Number(e.target.value))}
+                    className="w-full accent-[#2B59FF] cursor-pointer h-2"
+                    aria-label="Backing mix volume"
+                  />
+                </div>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setGuideGuitar((prev) => (prev === 'off' ? 'soft' : prev === 'soft' ? 'full' : 'off'))
+                  }
+                  className="px-2.5 py-1 rounded-lg border-[1.8px] border-[#121212] bg-[#F4ECDC] font-mono text-[10px] font-bold shrink-0"
+                >
+                  GUIDE: {guideGuitar.toUpperCase()}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

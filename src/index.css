@@ -134,6 +134,10 @@ body {
     @apply bg-white border-[2.5px] border-[#121212] rounded-2xl shadow-brutal-sm;
   }
 
+  .neo-card-lg {
+    @apply bg-[#FFFBF0] border-[2.5px] border-[#121212] rounded-[20px] shadow-brutal;
+  }
+
   .neo-card-deck {
     @apply bg-[#F4ECDC] border-[2.5px] border-[#121212] rounded-2xl shadow-brutal-sm;
   }

@@ -1,7 +1,11 @@
 import { useCallback, useEffect, useState } from 'react';
 import { BottomBar } from './components/BottomBar';
 import { CourseRoadmapView } from './components/CourseRoadmapView';
-import { CourseStageView, type AttemptOutcome } from './components/CourseStageView';
+import {
+  CourseStageView,
+  type AttemptOutcome,
+  type StageLensId,
+} from './components/CourseStageView';
 import { HistoryView } from './components/HistoryView';
 import { Setup } from './components/Setup';
 import { TopBar, type NavViewKind } from './components/TopBar';
@@ -26,6 +30,7 @@ type AppView =
       kind: 'stage';
       course: GuitarCourse;
       initialMode: CoursePracticeMode;
+      initialLens: StageLensId;
       initialDetailOpen?: boolean;
     }
   | { kind: 'setup' }
@@ -86,25 +91,57 @@ function parseInitialUrlConfig(): UrlDemoConfig {
     return GUITAR_COURSES[fallbackIndex] ?? GUITAR_COURSES[0];
   };
 
+  // ?demo=1&view=stage -> 02-stage-play.png (Default ARCADE 6-String Riff Highway on multi-string Course #01!)
   if (viewParam === 'stage') {
+    return {
+      demoMode,
+      initialView: {
+        kind: 'stage',
+        course: resolveCourse(0), // Course #01: Smokestack E Minor Blues (rich 4-string highway!)
+        initialMode: 'play',
+        initialLens: 'arcade',
+        initialDetailOpen: false,
+      },
+    };
+  }
+
+  // ?demo=1&view=staff -> 04-stage-staff.png (Single-Focus Coupled 5-Line Staff + 6-Line TAB)
+  if (viewParam === 'staff') {
     return {
       demoMode,
       initialView: {
         kind: 'stage',
         course: resolveCourse(2), // Course #03: Sunburst Soul Lead: Verse
         initialMode: 'play',
+        initialLens: 'staff',
         initialDetailOpen: false,
       },
     };
   }
 
+  // ?demo=1&view=neck -> 05-stage-neck.png (Single-Focus De-cluttered 3D Perspective Neck)
+  if (viewParam === 'neck') {
+    return {
+      demoMode,
+      initialView: {
+        kind: 'stage',
+        course: resolveCourse(2), // Course #03: Sunburst Soul Lead: Verse
+        initialMode: 'play',
+        initialLens: 'neck',
+        initialDetailOpen: false,
+      },
+    };
+  }
+
+  // ?demo=1&view=detail -> 03-interaction-detail.png (Coupled Staff+TAB Pitch Ribbon + <=215px 3-Pedal Stompbox Rack)
   if (viewParam === 'detail') {
     return {
       demoMode,
       initialView: {
         kind: 'stage',
-        course: resolveCourse(2), // Course #03: Post-take Forensic Ribbon + 3-Pedal Stompbox Rack
+        course: resolveCourse(2), // Course #03: Sunburst Soul Lead: Verse
         initialMode: 'play',
+        initialLens: 'staff',
         initialDetailOpen: true,
       },
     };
@@ -157,22 +194,24 @@ function AppShell() {
     isDemoMode ? buildDemoProgress() : readCourseProgress(),
   );
   const [setupCtaPulseActive, setSetupCtaPulseActive] = useState(false);
-  const [stageRunning, setStageRunning] = useState(false);
 
   const handleOpenRoadmap = useCallback(() => {
-    setStageRunning(false);
     setView({ kind: 'roadmap' });
   }, []);
 
   const handleNavigate = useCallback((nav: NavViewKind) => {
-    setStageRunning(false);
     setView({ kind: nav });
   }, []);
 
   const handleSelectCourse = useCallback(
     (course: GuitarCourse, initialMode: CoursePracticeMode = 'play') => {
-      setStageRunning(false);
-      setView({ kind: 'stage', course, initialMode, initialDetailOpen: false });
+      setView({
+        kind: 'stage',
+        course,
+        initialMode,
+        initialLens: 'arcade',
+        initialDetailOpen: false,
+      });
     },
     [],
   );
@@ -231,27 +270,26 @@ function AppShell() {
       ? isCourseUnlocked(nextCourseForStage, progress, GUITAR_COURSES)
       : false;
 
-  const stageTitle = isStageView
-    ? `${view.course.styleLabel.toUpperCase()} · ${view.course.keySignature.toUpperCase()}`
-    : null;
-
   return (
     <div className="h-screen flex flex-col overflow-hidden bg-[#FFFBF0] text-[#121212] font-display">
-      <TopBar
-        activeNav={activeNav}
-        stageTitle={stageTitle}
-        onNavigate={handleNavigate}
-        onBack={view.kind !== 'roadmap' ? handleOpenRoadmap : null}
-        demoMode={isDemoMode}
-        dimmed={isStageView && stageRunning}
-      />
+      {/* On Stage Views, CourseStageView owns the ONE unified 56px Stage Header (§2.1: Zero Duplicate Headers!) */}
+      {!isStageView && (
+        <TopBar
+          activeNav={activeNav}
+          stageTitle={null}
+          onNavigate={handleNavigate}
+          onBack={view.kind !== 'roadmap' ? handleOpenRoadmap : null}
+          demoMode={isDemoMode}
+        />
+      )}
 
-      <main className="flex-1 min-h-0 overflow-y-auto bg-[#FFFBF0]">
+      <main className="flex-1 min-h-0 overflow-hidden bg-[#FFFBF0]">
         {isStageView ? (
           <CourseStageView
-            key={`${view.course.id}-${view.initialDetailOpen ? 'detail' : 'stage'}`}
+            key={`${view.course.id}-${view.initialLens}-${view.initialDetailOpen ? 'detail' : 'stage'}`}
             course={view.course}
             initialMode={view.initialMode}
+            initialLens={view.initialLens}
             initialDetailOpen={Boolean(view.initialDetailOpen)}
             demoMode={isDemoMode}
             mastery={progress.courses[view.course.id]}
@@ -260,12 +298,15 @@ function AppShell() {
             onRecordAttempt={handleRecordAttempt}
             onSelectCourse={handleSelectCourse}
             onBackToRoadmap={handleOpenRoadmap}
-            onRunningChange={setStageRunning}
           />
         ) : view.kind === 'setup' ? (
-          <Setup onReachedScrollEnd={() => setSetupCtaPulseActive(true)} />
+          <div className="h-full overflow-y-auto">
+            <Setup onReachedScrollEnd={() => setSetupCtaPulseActive(true)} />
+          </div>
         ) : view.kind === 'history' ? (
-          <HistoryView />
+          <div className="h-full overflow-y-auto">
+            <HistoryView />
+          </div>
         ) : (
           <CourseRoadmapView
             progress={progress}
