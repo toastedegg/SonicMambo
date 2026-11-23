@@ -8,22 +8,22 @@ import {
 } from '../audio/backingTrackEngine';
 import { AMP_PRESETS, type AmpPresetId } from '../audio/guitarAmpRig';
 import { useAudioEngineControl } from '../context/AudioEngineContext';
-import {
-  getChapterForCourse,
-  type CoursePracticeMode,
-  type CourseTabNote,
-  type GuitarCourse,
+import type {
+  CoursePracticeMode,
+  CourseTabNote,
+  GuitarCourse,
 } from '../data/guitarCourses';
 import { HoldNoteScorer } from '../dsp/holdScorer';
 import { savePracticeSession } from '../storage/db';
 import type { LessonNoteStatus, LessonTimelineNote } from '../types/lesson';
 import { PASS_ACCURACY_THRESHOLD, type CourseMasteryRecord } from '../utils/courseProgress';
-import {
-  MinimalScoreCanvasPixi,
-  type HiddenDifficulty,
-  type NotationMode,
-  type StageMotionSnapshot,
-} from './MinimalScoreCanvasPixi';
+import { MamboMascotSvg } from './MamboMascot';
+import type { HiddenDifficulty, StageMotionSnapshot } from './MinimalScoreCanvasPixi';
+import { NeoArcadeStage } from './NeoArcadeStage';
+import { RisoEngravedScore, type VanishPass } from './RisoEngravedScore';
+import { RisoPerspectiveNeck } from './RisoPerspectiveNeck';
+
+export type StageLensId = 'arcade' | 'staff' | 'neck';
 
 export interface AttemptOutcome {
   passed: boolean;
@@ -34,6 +34,9 @@ export interface AttemptOutcome {
 interface CourseStageViewProps {
   course: GuitarCourse;
   initialMode?: CoursePracticeMode;
+  initialLens?: StageLensId;
+  initialDetailOpen?: boolean;
+  demoMode?: boolean;
   mastery: CourseMasteryRecord | undefined;
   nextCourse: GuitarCourse | null;
   isNextUnlocked: boolean;
@@ -57,30 +60,17 @@ interface StageRunSummary {
   newlyUnlockedCourse: GuitarCourse | null;
 }
 
-const NOTATION_STORAGE_KEY = 'sonicmambo:notationMode';
-
-function readNotationMode(): NotationMode {
-  try {
-    const raw = window.localStorage.getItem(NOTATION_STORAGE_KEY);
-    return raw === 'tab' ? 'tab' : 'staff';
-  } catch {
-    return 'staff';
-  }
-}
-
-function writeNotationMode(m: NotationMode): void {
-  try {
-    window.localStorage.setItem(NOTATION_STORAGE_KEY, m);
-  } catch {
-    // ignore
-  }
-}
+const LENS_ITEMS: ReadonlyArray<{ id: StageLensId; icon: string; label: string }> = [
+  { id: 'arcade', icon: '🕹️', label: 'ARCADE' },
+  { id: 'staff', icon: '🎼', label: 'STAFF+TAB' },
+  { id: 'neck', icon: '🎸', label: '3D NECK' },
+];
 
 const MODE_ITEMS: ReadonlyArray<{ id: CoursePracticeMode; label: string }> = [
-  { id: 'play', label: 'Play' },
-  { id: 'loop', label: 'Loop' },
-  { id: 'shadow', label: 'Shadow' },
-  { id: 'hidden', label: 'Hidden' },
+  { id: 'play', label: 'PLAY' },
+  { id: 'loop', label: 'LOOP' },
+  { id: 'shadow', label: 'SHADOW' },
+  { id: 'hidden', label: 'BLACKOUT' },
 ];
 
 const INITIAL_MOTION: StageMotionSnapshot = {
@@ -95,9 +85,56 @@ const INITIAL_MOTION: StageMotionSnapshot = {
   focusStartBeat: 0,
 };
 
+interface StompboxDef {
+  id: AmpPresetId;
+  name: string;
+  tag: string;
+  bg: string;
+  text: string;
+  led: string;
+  drivePct: number;
+  roomPct: number;
+}
+
+const STOMPBOXES: readonly StompboxDef[] = [
+  {
+    id: 'clean-studio',
+    name: 'TWIN CLEAN',
+    tag: '6L6 HEADROOM',
+    bg: '#2B59FF',
+    text: '#FFFFFF',
+    led: '#D8FF2E',
+    drivePct: 24,
+    roomPct: 42,
+  },
+  {
+    id: 'blues-breakup',
+    name: 'TWEED CRUNCH',
+    tag: 'WARM SAG',
+    bg: '#FF8A00',
+    text: '#121212',
+    led: '#D8FF2E',
+    drivePct: 56,
+    roomPct: 36,
+  },
+  {
+    id: 'british-crunch',
+    name: 'PLEXI LEAD',
+    tag: 'EL34 BITE',
+    bg: '#FF3B7F',
+    text: '#FFFFFF',
+    led: '#D8FF2E',
+    drivePct: 82,
+    roomPct: 28,
+  },
+];
+
 export function CourseStageView({
   course,
   initialMode = 'play',
+  initialLens = 'arcade',
+  initialDetailOpen = false,
+  demoMode = false,
   mastery,
   nextCourse,
   isNextUnlocked,
@@ -111,16 +148,13 @@ export function CourseStageView({
     ampSettings,
     detectionRef,
     start,
+    stop,
     updateAmpSettings,
     setInputGated,
     resetDsp,
   } = useAudioEngineControl();
 
-  const chapter = useMemo(() => getChapterForCourse(course), [course]);
-
-  const [notationMode, setNotationMode] = useState<NotationMode>(() =>
-    readNotationMode(),
-  );
+  const [lens, setLens] = useState<StageLensId>(initialLens);
   const [mode, setMode] = useState<CoursePracticeMode>(initialMode);
   const [bpm, setBpm] = useState<number>(course.tempoBpm);
   const [grooveStyle, setGrooveStyle] = useState<GrooveStyleId>(course.defaultGroove);
@@ -128,33 +162,32 @@ export function CourseStageView({
   const [volumePct, setVolumePct] = useState<number>(() =>
     Math.round(soundGenerator.getVolume() * 100),
   );
-  const [soundMenuOpen, setSoundMenuOpen] = useState<boolean>(false);
+  const [detailOpen, setDetailOpen] = useState<boolean>(initialDetailOpen);
+  const [activeStomp, setActiveStomp] = useState<AmpPresetId>('blues-breakup');
+  const [windowStartBar, setWindowStartBar] = useState<number>(1);
+  const [vanishPass, setVanishPass] = useState<VanishPass>(1);
 
-  // Mode micro-settings
   const [loopRange, setLoopRange] = useState<
     'all' | { startBar: number; endBar: number }
   >('all');
-  const [autoSpeedUp, setAutoSpeedUp] = useState<boolean>(true);
-  const [shadowBarsPerPhrase, setShadowBarsPerPhrase] = useState<1 | 2>(2);
+  const [autoSpeedUp] = useState<boolean>(true);
   const [hiddenDifficulty, setHiddenDifficulty] =
     useState<HiddenDifficulty>('ghost-passing');
 
-  // Discrete UI state ONLY (never mutated at 60/120fps!)
   const [runState, setRunState] = useState<'idle' | 'running' | 'preview' | 'results'>('idle');
-  const [loopPassMeta, setLoopPassMeta] = useState<{
-    passes: number;
-    lastAccuracy: number | null;
-  }>({ passes: 0, lastAccuracy: null });
+  const [activeNoteId, setActiveNoteId] = useState<string | null>(null);
   const [summary, setSummary] = useState<StageRunSummary | null>(null);
 
-  // High-frequency refs read directly by Pixi.js WebGL ticker (0 React renders per frame!)
   const motionRef = useRef<StageMotionSnapshot>({ ...INITIAL_MOTION });
   const noteStatusRef = useRef<Record<string, LessonNoteStatus>>({});
   const transportRef = useRef<BackingTransport | null>(null);
   const rafRef = useRef<number>(0);
   const scorerRef = useRef<HoldNoteScorer | null>(null);
   const shadowCancelledRef = useRef<boolean>(false);
-  const soundMenuRef = useRef<HTMLDivElement | null>(null);
+
+  // Direct DOM refs for live cents needle (zero per-frame React re-renders)
+  const liveCentsLabelRef = useRef<HTMLSpanElement | null>(null);
+  const centsNeedleDotRef = useRef<HTMLSpanElement | null>(null);
 
   const stopEverything = useCallback(() => {
     shadowCancelledRef.current = true;
@@ -175,16 +208,20 @@ export function CourseStageView({
 
   useEffect(() => {
     stopEverything();
+    setLens(initialLens);
     setMode(initialMode);
     setBpm(course.tempoBpm);
     setGrooveStyle(course.defaultGroove);
     setLoopRange('all');
+    setWindowStartBar(1);
+    setVanishPass(initialMode === 'hidden' ? 2 : 1);
     setSummary(null);
-    setLoopPassMeta({ passes: 0, lastAccuracy: null });
+    setDetailOpen(initialDetailOpen);
+    setActiveNoteId(null);
     noteStatusRef.current = {};
     motionRef.current = { ...INITIAL_MOTION };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [course.id, initialMode]);
+  }, [course.id, initialLens, initialMode, initialDetailOpen]);
 
   useEffect(() => {
     return () => {
@@ -195,26 +232,34 @@ export function CourseStageView({
     };
   }, [setInputGated]);
 
-  // Close sound popover on outside click
+  // Direct DOM cents needle update at 15Hz when live listening
   useEffect(() => {
-    if (!soundMenuOpen) return undefined;
-    const onDocClick = (ev: MouseEvent) => {
-      if (soundMenuRef.current && !soundMenuRef.current.contains(ev.target as Node)) {
-        setSoundMenuOpen(false);
+    if (!isListening || runState !== 'running') return undefined;
+    const id = window.setInterval(() => {
+      const det = detectionRef.current;
+      const c = Math.round(det.centsOffset ?? 0);
+      if (liveCentsLabelRef.current) {
+        liveCentsLabelRef.current.textContent = det.label
+          ? Math.abs(c) <= 5
+            ? `DEAD CENTER ${c >= 0 ? `+${c}¢` : `${c}¢`}`
+            : `${det.label} ${c >= 0 ? `+${c}¢` : `${c}¢`}`
+          : 'LISTENING';
       }
-    };
-    window.addEventListener('mousedown', onDocClick);
-    return () => window.removeEventListener('mousedown', onDocClick);
-  }, [soundMenuOpen]);
+      if (centsNeedleDotRef.current) {
+        const clamped = Math.max(-50, Math.min(50, det.centsOffset ?? 0));
+        centsNeedleDotRef.current.style.left = `${50 + clamped * 0.86}%`;
+      }
+    }, 66);
+    return () => window.clearInterval(id);
+  }, [detectionRef, isListening, runState]);
 
-  // Live update groove & guide guitar on active transport
   useEffect(() => {
     if (runState === 'running' && motionRef.current.shadowPhase !== 'listen') {
-      transportRef.current?.updateLiveOptions({ grooveStyle, guideGuitar });
+      transportRef.current?.updateLiveOptions({ grooveStyle, guideGuitar: 'off' });
     } else if (runState === 'preview') {
       transportRef.current?.updateLiveOptions({ grooveStyle, guideGuitar: 'full' });
     }
-  }, [grooveStyle, guideGuitar, runState]);
+  }, [grooveStyle, runState]);
 
   const activeCycle = useMemo(() => {
     const startBar =
@@ -234,11 +279,6 @@ export function CourseStageView({
     return { startBar, endBar, startBeatOffset, totalBeats, notes: cycleNotes };
   }, [course.beatsPerBar, course.notes, course.totalBars, loopRange, mode]);
 
-  const handleToggleNotation = (next: NotationMode) => {
-    setNotationMode(next);
-    writeNotationMode(next);
-  };
-
   const handleSwitchMode = (nextMode: CoursePracticeMode) => {
     stopEverything();
     setSummary(null);
@@ -250,6 +290,12 @@ export function CourseStageView({
       setBpm(course.tempoBpm);
       setLoopRange('all');
       motionRef.current.focusStartBeat = 0;
+    }
+    if (nextMode === 'hidden') {
+      setVanishPass(2);
+      setHiddenDifficulty('ghost-passing');
+    } else {
+      setVanishPass(1);
     }
   };
 
@@ -278,7 +324,13 @@ export function CourseStageView({
     soundGenerator.setVolume(clamped / 100);
   };
 
-  /* ─────────────── SOUND GENERATOR PREVIEW ("HEAR") ─────────────── */
+  const handleSelectStomp = (presetId: AmpPresetId) => {
+    setActiveStomp(presetId);
+    if (AMP_PRESETS.some((p) => p.id === presetId)) {
+      void updateAmpSettings({ enabled: true, preset: presetId });
+    }
+  };
+
   const startSoundPreview = useCallback(() => {
     stopEverything();
     shadowCancelledRef.current = false;
@@ -303,6 +355,7 @@ export function CourseStageView({
         setInputGated(false);
         motionRef.current.previewing = false;
         motionRef.current.activeTargetNoteId = null;
+        setActiveNoteId(null);
         setRunState('idle');
       },
     });
@@ -314,28 +367,30 @@ export function CourseStageView({
     setRunState('preview');
     transport.start();
 
+    let lastActiveId: string | null = null;
     const tick = () => {
       if (!transport.isRunning()) return;
       const pos = transport.getPosition();
       motionRef.current.courseBeat = activeCycle.startBeatOffset + pos.elapsedBeats;
       motionRef.current.beatInBar = pos.beatInBar;
-
-      let activeId: string | null = null;
+      let nextActive: string | null = null;
       for (let i = 0; i < activeCycle.notes.length; i += 1) {
         const n = activeCycle.notes[i];
         if (pos.elapsedBeats >= n.startBeat && pos.elapsedBeats < n.startBeat + n.durationBeats) {
-          activeId = n.id;
+          nextActive = n.id;
           break;
         }
       }
-      motionRef.current.activeTargetNoteId = activeId;
-
+      motionRef.current.activeTargetNoteId = nextActive;
+      if (nextActive !== lastActiveId) {
+        lastActiveId = nextActive;
+        setActiveNoteId(nextActive);
+      }
       rafRef.current = requestAnimationFrame(tick);
     };
     rafRef.current = requestAnimationFrame(tick);
   }, [activeCycle, bpm, course.beatsPerBar, course.defaultGroove, grooveStyle, setInputGated, stopEverything]);
 
-  /* ─────────────── PLAY / HIDDEN / LOOP RUNNER (ZERO REACT RE-RENDERS!) ─────────────── */
   const startTimedRun = useCallback(
     async (overrideBpm?: number, skipCountIn: boolean = false) => {
       if (!isListening) {
@@ -347,6 +402,7 @@ export function CourseStageView({
       stopEverything();
       shadowCancelledRef.current = false;
       setSummary(null);
+      setDetailOpen(false);
 
       const effectiveBpm = overrideBpm ?? bpm;
       const beatMs = 60_000 / Math.max(35, effectiveBpm);
@@ -372,7 +428,6 @@ export function CourseStageView({
         const scorer = scorerRef.current;
         if (!scorer) return;
         const final = scorer.finalizeAll(noteStatusRef.current);
-
         const total = Math.max(1, final.hits + final.misses);
         const accuracy = final.hits / total;
         const centsVals = final.summaries
@@ -414,6 +469,7 @@ export function CourseStageView({
         motionRef.current.running = false;
         motionRef.current.inCountIn = false;
         motionRef.current.activeTargetNoteId = null;
+        setActiveNoteId(null);
 
         setSummary({
           mode,
@@ -426,6 +482,7 @@ export function CourseStageView({
           newlyUnlockedCourse: outcome.newlyUnlockedCourse,
         });
         setRunState('results');
+        setDetailOpen(true);
       };
 
       const handleLoopRevolutionEnd = () => {
@@ -440,24 +497,14 @@ export function CourseStageView({
         }
 
         const clean = passAcc >= 0.85;
-        let nextBpmToRestart: number | null = null;
         if (autoSpeedUp && clean && effectiveBpm < Math.round(course.tempoBpm * 1.25)) {
-          nextBpmToRestart = Math.min(
+          const nextBpm = Math.min(
             Math.round(course.tempoBpm * 1.25),
             Math.max(effectiveBpm + 2, Math.round(effectiveBpm * 1.05)),
           );
-        }
-
-        setLoopPassMeta((prev) => ({
-          passes: prev.passes + 1,
-          lastAccuracy: passAcc,
-        }));
-
-        if (nextBpmToRestart != null) {
-          const targetBpm = nextBpmToRestart;
-          setBpm(targetBpm);
+          setBpm(nextBpm);
           window.setTimeout(() => {
-            void startTimedRun(targetBpm, true);
+            void startTimedRun(nextBpm, true);
           }, 0);
           return;
         }
@@ -475,7 +522,7 @@ export function CourseStageView({
         countInBeats: skipCountIn ? 0 : 4,
         loop: isLoopMode,
         grooveStyle,
-        guideGuitar,
+        guideGuitar: 'off',
         notes: activeCycle.notes,
         onLoopWrap: isLoopMode ? handleLoopRevolutionEnd : undefined,
         onComplete: !isLoopMode ? finalizeFullRun : undefined,
@@ -490,14 +537,12 @@ export function CourseStageView({
       transport.start();
 
       let lastTickPerf = performance.now();
-
-      // Pure ref mutation loop — ZERO setState calls inside RAF!
+      let lastActiveId: string | null = null;
       const tick = () => {
         if (!transport.isRunning()) return;
         const nowPerf = performance.now();
         const dtMs = nowPerf - lastTickPerf;
         lastTickPerf = nowPerf;
-
         const pos = transport.getPosition();
         const m = motionRef.current;
         m.inCountIn = pos.inCountIn;
@@ -506,25 +551,30 @@ export function CourseStageView({
 
         if (pos.inCountIn) {
           m.courseBeat = activeCycle.startBeatOffset;
-          m.activeTargetNoteId = activeCycle.notes[0]?.id ?? null;
+          const firstId = activeCycle.notes[0]?.id ?? null;
+          m.activeTargetNoteId = firstId;
+          if (firstId !== lastActiveId) {
+            lastActiveId = firstId;
+            setActiveNoteId(firstId);
+          }
           rafRef.current = requestAnimationFrame(tick);
           return;
         }
 
         m.courseBeat = activeCycle.startBeatOffset + pos.elapsedBeats;
-
-        let activeId: string | null = null;
+        let nextActive: string | null = null;
         for (let i = 0; i < activeCycle.notes.length; i += 1) {
           const n = activeCycle.notes[i];
-          if (
-            pos.elapsedBeats >= n.startBeat &&
-            pos.elapsedBeats < n.startBeat + n.durationBeats
-          ) {
-            activeId = n.id;
+          if (pos.elapsedBeats >= n.startBeat && pos.elapsedBeats < n.startBeat + n.durationBeats) {
+            nextActive = n.id;
             break;
           }
         }
-        m.activeTargetNoteId = activeId;
+        m.activeTargetNoteId = nextActive;
+        if (nextActive !== lastActiveId) {
+          lastActiveId = nextActive;
+          setActiveNoteId(nextActive);
+        }
 
         const det = detectionRef.current;
         scorerRef.current?.step(
@@ -535,10 +585,8 @@ export function CourseStageView({
           det.tuningOffsetCents,
           noteStatusRef.current,
         );
-
         rafRef.current = requestAnimationFrame(tick);
       };
-
       rafRef.current = requestAnimationFrame(tick);
     },
     [
@@ -552,7 +600,6 @@ export function CourseStageView({
       course.title,
       detectionRef,
       grooveStyle,
-      guideGuitar,
       isListening,
       mode,
       onRecordAttempt,
@@ -562,656 +609,494 @@ export function CourseStageView({
     ],
   );
 
-  /* ─────────────── SHADOWING MODE (ZERO REACT RE-RENDERS!) ─────────────── */
-  const startShadowingRun = useCallback(async () => {
-    if (!isListening) {
-      await start();
-    } else {
-      resetDsp();
+  // Determine strict 2-dot Focus (Current + Next) for Lens 3 (3D Perspective Neck)
+  const neckFocus = useMemo(() => {
+    const windowEndBar = Math.min(course.totalBars, windowStartBar + 3);
+    const inWin = course.notes.filter(
+      (n) => n.bar >= windowStartBar && n.bar <= windowEndBar,
+    );
+    if (inWin.length === 0) return { active: null, next: null };
+
+    let activeIdx = -1;
+    if (activeNoteId) {
+      activeIdx = inWin.findIndex((n) => n.id === activeNoteId);
     }
-
-    stopEverything();
-    shadowCancelledRef.current = false;
-    setSummary(null);
-    noteStatusRef.current = {};
-
-    const phrases: Array<{ startBar: number; endBar: number }> = [];
-    for (let b = 1; b <= course.totalBars; b += shadowBarsPerPhrase) {
-      phrases.push({
-        startBar: b,
-        endBar: Math.min(course.totalBars, b + shadowBarsPerPhrase - 1),
-      });
+    if (activeIdx < 0 && demoMode && runState === 'idle') {
+      activeIdx = inWin.findIndex((n) => n.bar === windowStartBar + 2);
     }
+    if (activeIdx < 0) activeIdx = 0;
 
-    const beatMs = 60_000 / Math.max(35, bpm);
-    const effectiveGroove: GrooveStyleId =
-      grooveStyle === 'off' ? course.defaultGroove : grooveStyle;
-
-    motionRef.current.running = true;
-    motionRef.current.previewing = false;
-    setRunState('running');
-
-    let totalHits = 0;
-    let totalMisses = 0;
-    const allCents: number[] = [];
-
-    const runPhasePromise = (
-      phrase: { startBar: number; endBar: number },
-      phaseKind: 'listen' | 'respond',
-      isVeryFirst: boolean,
-    ): Promise<void> =>
-      new Promise((resolve) => {
-        if (shadowCancelledRef.current) {
-          resolve();
-          return;
-        }
-
-        const startBeatOffset = (phrase.startBar - 1) * course.beatsPerBar;
-        const phraseBeats = (phrase.endBar - phrase.startBar + 1) * course.beatsPerBar;
-        const phraseNotes: CourseTabNote[] = course.notes
-          .filter((n) => n.bar >= phrase.startBar && n.bar <= phrase.endBar)
-          .map((n) => ({
-            ...n,
-            startBeat: n.startBeat - startBeatOffset,
-          }));
-
-        motionRef.current.shadowPhase = phaseKind;
-        motionRef.current.courseBeat = startBeatOffset;
-
-        if (phaseKind === 'listen') {
-          setInputGated(true);
-        } else {
-          setInputGated(false);
-          resetDsp();
-        }
-
-        const phraseTimeline: LessonTimelineNote[] = phraseNotes.map((n) => ({
-          id: n.id,
-          label: n.label,
-          startBeat: n.startBeat,
-          durationBeats: n.durationBeats,
-          startMs: n.startBeat * beatMs,
-          durationMs: n.durationBeats * beatMs,
-          status: 'pending',
-        }));
-
-        const phraseScorer =
-          phaseKind === 'respond'
-            ? new HoldNoteScorer(phraseTimeline, beatMs, { latencyMs: audioLatencyMs })
-            : null;
-
-        const transport = new BackingTransport({
-          bpm,
-          beatsPerBar: course.beatsPerBar,
-          totalBeats: phraseBeats,
-          countInBeats: isVeryFirst ? 4 : 0,
-          loop: false,
-          grooveStyle: effectiveGroove,
-          guideGuitar: phaseKind === 'listen' ? 'full' : 'off',
-          notes: phraseNotes,
-          onComplete: () => {
-            if (rafRef.current) cancelAnimationFrame(rafRef.current);
-            if (phraseScorer) {
-              const res = phraseScorer.finalizeAll(noteStatusRef.current);
-              totalHits += res.hits;
-              totalMisses += res.misses;
-              res.summaries.forEach((s) => {
-                if (s.medianCents != null) allCents.push(s.medianCents);
-              });
-            }
-            resolve();
-          },
-        });
-
-        transportRef.current = transport;
-        transport.start();
-
-        let lastPerf = performance.now();
-        const tick = () => {
-          if (shadowCancelledRef.current || !transport.isRunning()) return;
-          const nowPerf = performance.now();
-          const dtMs = nowPerf - lastPerf;
-          lastPerf = nowPerf;
-
-          const pos = transport.getPosition();
-          const m = motionRef.current;
-          m.inCountIn = pos.inCountIn;
-          m.countInNumber = pos.countInNumber;
-          m.beatInBar = pos.beatInBar;
-
-          if (pos.inCountIn) {
-            m.courseBeat = startBeatOffset;
-            m.activeTargetNoteId = phraseNotes[0]?.id ?? null;
-            rafRef.current = requestAnimationFrame(tick);
-            return;
-          }
-
-          m.courseBeat = startBeatOffset + pos.elapsedBeats;
-
-          let activeId: string | null = null;
-          for (let i = 0; i < phraseNotes.length; i += 1) {
-            const n = phraseNotes[i];
-            if (
-              pos.elapsedBeats >= n.startBeat &&
-              pos.elapsedBeats < n.startBeat + n.durationBeats
-            ) {
-              activeId = n.id;
-              break;
-            }
-          }
-          m.activeTargetNoteId = activeId;
-
-          if (phraseScorer) {
-            const det = detectionRef.current;
-            phraseScorer.step(
-              pos.elapsedMs,
-              dtMs,
-              det.hz,
-              det.confidence,
-              det.tuningOffsetCents,
-              noteStatusRef.current,
-            );
-          }
-
-          rafRef.current = requestAnimationFrame(tick);
-        };
-        rafRef.current = requestAnimationFrame(tick);
-      });
-
-    for (let i = 0; i < phrases.length; i += 1) {
-      if (shadowCancelledRef.current) return;
-      await runPhasePromise(phrases[i], 'listen', i === 0);
-      if (shadowCancelledRef.current) return;
-      await runPhasePromise(phrases[i], 'respond', false);
-    }
-
-    if (shadowCancelledRef.current) return;
-
-    setInputGated(false);
-    motionRef.current.running = false;
-    motionRef.current.shadowPhase = 'idle';
-    motionRef.current.activeTargetNoteId = null;
-
-    const total = Math.max(1, totalHits + totalMisses);
-    const accuracy = totalHits / total;
-    const meanCents =
-      allCents.length > 0
-        ? Math.round(allCents.reduce((a, b) => a + b, 0) / allCents.length)
-        : null;
-
-    const outcome = onRecordAttempt({
-      courseId: course.id,
-      mode: 'shadow',
-      accuracy,
-    });
-
-    void savePracticeSession({
-      id: `course-${course.id}-shadow-${Date.now()}`,
-      mode: 'shadow',
-      title: `${course.title} (Shadowing)`,
-      startedAtIso: new Date().toISOString(),
-      durationSec: Math.round((course.totalBars * course.beatsPerBar * 2 * beatMs) / 1000),
-      tempoBpm: bpm,
-      hits: totalHits,
-      misses: totalMisses,
-      accuracy,
-      meanTimingOffsetMs: null,
-      meanCentsError: meanCents,
-      noteResults: [],
-    });
-
-    setSummary({
-      mode: 'shadow',
-      hits: totalHits,
-      misses: totalMisses,
-      accuracy,
-      meanCents,
-      passed: outcome.passed,
-      starsEarned: outcome.starsEarned,
-      newlyUnlockedCourse: outcome.newlyUnlockedCourse,
-    });
-    setRunState('results');
-  }, [
-    audioLatencyMs,
-    bpm,
-    course.beatsPerBar,
-    course.defaultGroove,
-    course.id,
-    course.notes,
-    course.title,
-    course.totalBars,
-    detectionRef,
-    grooveStyle,
-    isListening,
-    onRecordAttempt,
-    resetDsp,
-    setInputGated,
-    shadowBarsPerPhrase,
-    start,
-    stopEverything,
-  ]);
-
-  const handlePrimaryStart = () => {
-    if (mode === 'shadow') {
-      void startShadowingRun();
-    } else {
-      void startTimedRun();
-    }
-  };
+    return {
+      active: inWin[activeIdx] ?? null,
+      next: inWin[activeIdx + 1] ?? inWin[0] ?? null,
+    };
+  }, [activeNoteId, course.notes, course.totalBars, demoMode, runState, windowStartBar]);
 
   const completedModes = mastery?.completedModes ?? [];
-  const activeGrooveShort =
-    GROOVE_STYLE_META.find((g) => g.id === grooveStyle)?.shortLabel ?? 'Beat';
+  const isPlayingChromeDimmed = runState === 'running';
+  const ampOn = ampSettings.enabled || demoMode;
+  const micOn = isListening || demoMode;
+  const accuracyPct = summary ? Math.round(summary.accuracy * 100) : 94;
+  const displayStars = summary ? summary.starsEarned : 3;
 
   return (
-    <div className="min-h-full flex flex-col justify-center px-6 md:px-12 py-8 max-w-5xl mx-auto gap-7">
-      {/* Row 1: Calm Minimalist Stage Header + Staff/TAB Switch + Segmented Mode Pill */}
-      <header className="flex items-end justify-between gap-6 flex-wrap">
-        <div className="space-y-1">
-          <div className="flex items-center gap-2.5 text-xs font-semibold text-sp-text-muted">
-            <span style={{ color: chapter.accentHex }} className="font-extrabold">
-              {String(course.order).padStart(2, '0')}
-            </span>
-            <span>&middot;</span>
-            <span>{course.styleLabel}</span>
-            <span>&middot;</span>
-            <span>{course.keySignature}</span>
-            <span>&middot;</span>
-            <span>{course.totalBars} Bars</span>
-          </div>
-          <h1 className="text-2xl md:text-3xl font-extrabold text-white tracking-tight">
+    <div className="h-full flex flex-col bg-[#FFFBF0] overflow-hidden">
+      {/* ══════════════════════════════════════════════════════════════════
+          STRATUM 1: ONE UNIFIED 56px STAGE HEADER BAR (§2.1 — ZERO DUPLICATE HEADERS!)
+         ══════════════════════════════════════════════════════════════════ */}
+      <header
+        className={`h-[56px] shrink-0 bg-[#FFFBF0] border-b-[2.5px] border-[#121212] px-4 flex items-center justify-between gap-3 transition-opacity duration-300 z-30 ${
+          isPlayingChromeDimmed ? 'opacity-25 hover:opacity-100' : 'opacity-100'
+        }`}
+      >
+        {/* Left: [← MAP] · [01] Stage Badge · Course Title · Key · BPM (Printed ONCE!) */}
+        <div className="flex items-center gap-2.5 min-w-0">
+          <button
+            type="button"
+            onClick={onBackToRoadmap}
+            className="neo-pill-btn px-2.5 py-1 bg-[#FFFBF0] hover:bg-[#F4ECDC] font-mono text-[11px] font-bold text-[#121212] shrink-0"
+          >
+            ← MAP
+          </button>
+
+          <span className="px-2 py-0.5 rounded-lg bg-[#121212] text-[#D8FF2E] font-mono text-[11px] font-bold shrink-0">
+            {String(course.order).padStart(2, '0')}
+          </span>
+
+          <h1 className="font-syne text-[17px] font-extrabold text-[#121212] tracking-tight truncate">
             {course.title}
           </h1>
+
+          <span className="hidden xl:inline-flex items-center px-2 py-0.5 rounded-md bg-[#F4ECDC] border border-[#121212]/25 font-mono text-[11px] font-bold text-[#57534A] shrink-0">
+            {course.keySignature} · {bpm} BPM
+          </span>
         </div>
 
-        <div className="flex items-center gap-2.5 flex-wrap">
-          {/* Staff | TAB Switch Button */}
-          <div
-            className="inline-flex items-center p-0.5 rounded-full bg-white/[0.05] border border-white/[0.08]"
-            role="group"
-            aria-label="Notation view"
-          >
-            {(
-              [
-                { id: 'staff', label: 'Staff' },
-                { id: 'tab', label: 'TAB' },
-              ] as const
-            ).map((opt) => {
-              const active = notationMode === opt.id;
-              return (
-                <button
-                  key={opt.id}
-                  type="button"
-                  onClick={() => handleToggleNotation(opt.id)}
-                  className={`px-3.5 py-1 rounded-full text-xs font-bold transition-colors ${
-                    active
-                      ? 'bg-white text-black'
-                      : 'text-sp-text-sub hover:text-white'
-                  }`}
-                >
-                  {opt.label}
-                </button>
-              );
-            })}
+        {/* Center: Live Pitch Reticle Pill + Flow Stamp */}
+        <div className="hidden lg:flex items-center gap-2 shrink-0">
+          <div className="inline-flex items-center gap-2 px-2.5 py-1 rounded-full bg-[#FFFBF0] border-[2px] border-[#121212]">
+            <span
+              ref={liveCentsLabelRef}
+              className="font-mono text-[10.5px] font-bold text-[#121212] whitespace-nowrap"
+            >
+              DEAD CENTER +2¢
+            </span>
+            <div className="flex items-center gap-1">
+              <span className="font-mono text-[9px] text-[#57534A]">♭</span>
+              <div className="relative w-12 h-2 rounded-full bg-[#F4ECDC] border border-[#121212]">
+                <div className="absolute left-1/2 top-0 bottom-0 w-px bg-[#121212]/40" />
+                <span
+                  ref={centsNeedleDotRef}
+                  className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-2.5 h-2.5 rounded-full bg-[#1CE088] border border-[#121212]"
+                  style={{ left: '53%' }}
+                />
+              </div>
+              <span className="font-mono text-[9px] text-[#57534A]">♯</span>
+            </div>
           </div>
 
-          {/* Compact 4-Mode Segmented Pill */}
+          <span className="px-2.5 py-1 rounded-full bg-[#D8FF2E] border-[2px] border-[#121212] font-mono text-[10.5px] font-bold text-[#121212] tabular-nums">
+            14× FLOW
+          </span>
+        </div>
+
+        {/* Right: Single-Focus 3-Lens Switcher + Compact AMP / MIC LEDs */}
+        <div className="flex items-center gap-2 shrink-0">
           <div
-            className="inline-flex items-center p-0.5 rounded-full bg-white/[0.05] border border-white/[0.08]"
-            role="group"
-            aria-label="Practice mode"
+            className="inline-flex items-center p-0.5 rounded-xl bg-[#F4ECDC] border-[2px] border-[#121212]"
+            role="tablist"
+            aria-label="Single-focus stage lens"
           >
-            {MODE_ITEMS.map((item) => {
-              const selected = mode === item.id;
-              const done = completedModes.includes(item.id);
+            {LENS_ITEMS.map((item) => {
+              const active = !detailOpen && lens === item.id;
               return (
                 <button
                   key={item.id}
                   type="button"
-                  onClick={() => handleSwitchMode(item.id)}
-                  className={`px-3.5 py-1 rounded-full text-xs font-bold transition-colors inline-flex items-center gap-1.5 ${
-                    selected
-                      ? 'text-black'
-                      : 'text-sp-text-sub hover:text-white'
+                  role="tab"
+                  aria-selected={active}
+                  onClick={() => {
+                    setDetailOpen(false);
+                    setLens(item.id);
+                  }}
+                  className={`px-2.5 py-1 rounded-lg font-mono text-[10.5px] font-bold transition-colors flex items-center gap-1 whitespace-nowrap ${
+                    active
+                      ? 'bg-[#121212] text-[#D8FF2E]'
+                      : 'text-[#57534A] hover:text-[#121212]'
                   }`}
-                  style={
-                    selected ? { backgroundColor: chapter.accentHex } : undefined
-                  }
                 >
+                  <span aria-hidden>{item.icon}</span>
                   <span>{item.label}</span>
-                  {done && (
-                    <span
-                      className={`w-1.5 h-1.5 rounded-full ${
-                        selected ? 'bg-black/70' : 'bg-sp-green'
-                      }`}
-                    />
-                  )}
                 </button>
               );
             })}
           </div>
+
+          <button
+            type="button"
+            onClick={() => void updateAmpSettings({ enabled: !ampSettings.enabled })}
+            className={`px-2 py-1 rounded-lg border-[2px] border-[#121212] font-mono text-[10px] font-bold flex items-center gap-1 ${
+              ampOn ? 'bg-[#FF8A00] text-[#121212]' : 'bg-[#FFFBF0] text-[#57534A]'
+            }`}
+          >
+            <span className={`w-1.5 h-1.5 rounded-full border border-[#121212] ${ampOn ? 'bg-[#D8FF2E]' : 'bg-[#F4ECDC]'}`} />
+            AMP
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              if (isListening) stop();
+              else void start();
+            }}
+            className={`px-2 py-1 rounded-lg border-[2px] border-[#121212] font-mono text-[10px] font-bold flex items-center gap-1 ${
+              micOn ? 'bg-[#D8FF2E] text-[#121212]' : 'bg-[#FFFBF0] text-[#121212]'
+            }`}
+          >
+            <span className={`w-1.5 h-1.5 rounded-full border border-[#121212] ${micOn ? 'bg-[#1CE088]' : 'bg-[#FF3B7F]'}`} />
+            {micOn ? 'MIC ON' : 'MIC'}
+          </button>
         </div>
       </header>
 
-      {/* Row 2: Fluid 120fps Pixi.js v8 Musical Canvas (Staff or TAB) */}
-      <MinimalScoreCanvasPixi
-        notes={course.notes}
-        barChords={course.barChords}
-        totalBars={course.totalBars}
-        beatsPerBar={course.beatsPerBar}
-        accentHex={chapter.accentHex}
-        notationMode={notationMode}
-        practiceMode={mode}
-        hiddenDifficulty={hiddenDifficulty}
-        loopRange={loopRange}
-        motionRef={motionRef}
-        detectionRef={detectionRef}
-        noteStatusRef={noteStatusRef}
-        onSelectBar={handleSelectBar}
-      />
-
-      {/* Row 3: Single Centered Minimalist Floating Transport Capsule */}
-      <div className="flex items-center justify-center">
-        <div className="relative inline-flex items-center gap-2 px-3 py-2 rounded-full bg-[#11151e] border border-white/[0.08] shadow-xl flex-wrap justify-center">
-          {/* Play / Stop */}
-          {runState === 'running' ? (
-            <button
-              type="button"
-              onClick={stopEverything}
-              className="px-5 py-1.5 rounded-full text-xs font-extrabold bg-rose-500 text-white hover:brightness-110 transition"
-            >
-              Stop
-            </button>
-          ) : (
-            <button
-              type="button"
-              onClick={handlePrimaryStart}
-              className="px-5 py-1.5 rounded-full text-xs font-extrabold text-black transition-transform hover:scale-[1.02]"
-              style={{ backgroundColor: chapter.accentHex }}
-            >
-              {mode === 'play'
-                ? 'Start'
-                : mode === 'loop'
-                  ? 'Start Loop'
-                  : mode === 'shadow'
-                    ? 'Start Shadow'
-                    : 'Start Hidden'}
-            </button>
-          )}
-
-          {/* Hear Preview */}
-          {runState === 'preview' ? (
-            <button
-              type="button"
-              onClick={stopEverything}
-              className="px-3.5 py-1.5 rounded-full text-xs font-bold bg-amber-400 text-black"
-            >
-              Stop Hear
-            </button>
-          ) : (
-            <button
-              type="button"
-              disabled={runState === 'running'}
-              onClick={startSoundPreview}
-              className="px-3.5 py-1.5 rounded-full text-xs font-bold text-sp-text-sub hover:text-white hover:bg-white/[0.06] disabled:opacity-35 transition-colors inline-flex items-center gap-1.5"
-              title="Listen to guitar synth + drum beat"
-            >
-              <span>&#9834;</span>
-              <span>Hear</span>
-            </button>
-          )}
-
-          <span className="h-4 w-px bg-white/[0.08]" aria-hidden />
-
-          {/* Minimal BPM Control */}
-          <div className="inline-flex items-center gap-1 text-xs">
-            <button
-              type="button"
-              disabled={runState === 'running'}
-              onClick={() => setBpm((b) => Math.max(40, b - 5))}
-              className="w-6 h-6 rounded-full text-sp-text-muted hover:text-white hover:bg-white/[0.06] disabled:opacity-35 font-bold"
-              aria-label="Decrease tempo"
-            >
-              &minus;
-            </button>
-            <span className="font-bold text-white tabular-nums px-1 min-w-[58px] text-center">
-              {bpm} BPM
-            </span>
-            <button
-              type="button"
-              disabled={runState === 'running'}
-              onClick={() => setBpm((b) => Math.min(160, b + 5))}
-              className="w-6 h-6 rounded-full text-sp-text-muted hover:text-white hover:bg-white/[0.06] disabled:opacity-35 font-bold"
-              aria-label="Increase tempo"
-            >
-              +
-            </button>
+      {/* ══════════════════════════════════════════════════════════════════
+          STRATUM 2: SINGLE-FOCUS FULL STAGE OR POST-TAKE FORENSIC REVIEW
+         ══════════════════════════════════════════════════════════════════ */}
+      {!detailOpen ? (
+        <>
+          {/* ONE Generous Full-Stage Canvas — NEVER stack two views vertically! */}
+          <div className="flex-1 min-h-0 px-4 py-3 max-w-[1440px] mx-auto w-full flex flex-col">
+            {lens === 'arcade' ? (
+              <NeoArcadeStage
+                notes={course.notes}
+                barChords={course.barChords}
+                totalBars={course.totalBars}
+                beatsPerBar={course.beatsPerBar}
+                practiceMode={mode}
+                hiddenDifficulty={hiddenDifficulty}
+                loopRange={loopRange}
+                motionRef={motionRef}
+                noteStatusRef={noteStatusRef}
+                onSelectBar={handleSelectBar}
+                demoShowcase={demoMode}
+              />
+            ) : lens === 'staff' ? (
+              <RisoEngravedScore
+                course={course}
+                mode={mode}
+                vanishPass={vanishPass}
+                onChangeVanishPass={setVanishPass}
+                windowStartBar={windowStartBar}
+                onWindowStartBarChange={setWindowStartBar}
+                loopRange={loopRange}
+                runState={runState}
+                motionRef={motionRef}
+                noteStatusRef={noteStatusRef}
+                activeNoteId={activeNoteId}
+                onSelectBar={handleSelectBar}
+                forensicMode={false}
+                demoMode={demoMode}
+              />
+            ) : (
+              <RisoPerspectiveNeck
+                course={course}
+                activeNote={neckFocus.active}
+                nextNote={neckFocus.next}
+                bleedStringNum={null}
+              />
+            )}
           </div>
 
-          {/* Contextual Single Micro-Chip for Active Mode */}
-          {mode === 'loop' && (
-            <>
-              <span className="h-4 w-px bg-white/[0.08]" aria-hidden />
-              {loopRange !== 'all' && (
+          {/* STRATUM 3: Compact 58px Bottom Transport Strip (Zero Mambo Buddy / Zero TIP Footers!) */}
+          <footer className="h-[58px] shrink-0 px-4 pb-3 max-w-[1440px] mx-auto w-full flex items-center">
+            <div className="w-full h-full neo-card bg-[#FFFBF0] px-3 flex items-center justify-between gap-3">
+              {/* Left: Start Groove + Hear + BPM */}
+              <div className="flex items-center gap-2">
+                {runState === 'running' ? (
+                  <button
+                    type="button"
+                    onClick={stopEverything}
+                    className="px-4 py-1.5 rounded-xl border-[2.2px] border-[#121212] bg-[#FF3B7F] text-white font-syne text-xs font-extrabold tracking-wide shadow-brutal-xs"
+                  >
+                    ■ STOP
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => void startTimedRun()}
+                    className="px-4 py-1.5 rounded-xl border-[2.2px] border-[#121212] bg-[#D8FF2E] text-[#121212] font-syne text-xs font-extrabold tracking-wide shadow-brutal-xs hover:bg-[#C7F21D]"
+                  >
+                    ▶ START GROOVE
+                  </button>
+                )}
+
                 <button
                   type="button"
-                  disabled={runState === 'running'}
-                  onClick={() => setLoopRange('all')}
-                  className="px-2.5 py-1 rounded-full text-[11px] font-bold bg-white/10 text-white hover:bg-white/15"
-                >
-                  Bar {loopRange.startBar} &times;
-                </button>
-              )}
-              <button
-                type="button"
-                onClick={() => setAutoSpeedUp((v) => !v)}
-                className={`px-2.5 py-1 rounded-full text-[11px] font-bold transition-colors ${
-                  autoSpeedUp
-                    ? 'bg-sp-green/15 text-sp-green'
-                    : 'text-sp-text-muted hover:text-white'
-                }`}
-                title="Automatically increase BPM by +5% after each clean loop"
-              >
-                +5% Auto
-              </button>
-              {loopPassMeta.passes > 0 && (
-                <span className="text-[11px] font-semibold text-sp-text-muted tabular-nums px-1">
-                  Pass {loopPassMeta.passes} &middot;{' '}
-                  {Math.round((loopPassMeta.lastAccuracy ?? 0) * 100)}%
-                </span>
-              )}
-            </>
-          )}
-
-          {mode === 'shadow' && (
-            <>
-              <span className="h-4 w-px bg-white/[0.08]" aria-hidden />
-              <button
-                type="button"
-                disabled={runState === 'running'}
-                onClick={() => setShadowBarsPerPhrase((p) => (p === 2 ? 1 : 2))}
-                className="px-2.5 py-1 rounded-full text-[11px] font-bold text-sky-300 bg-sky-400/10 hover:bg-sky-400/20 disabled:opacity-40"
-              >
-                {shadowBarsPerPhrase === 2 ? '2-Bar Echo' : '1-Bar Echo'}
-              </button>
-            </>
-          )}
-
-          {mode === 'hidden' && (
-            <>
-              <span className="h-4 w-px bg-white/[0.08]" aria-hidden />
-              {(
-                [
-                  { id: 'ghost-passing', label: '50%' },
-                  { id: 'bar-anchors', label: '75%' },
-                  { id: 'full-blackout', label: '100%' },
-                ] as const
-              ).map((opt) => (
-                <button
-                  key={opt.id}
-                  type="button"
-                  onClick={() => setHiddenDifficulty(opt.id)}
-                  className={`px-2.5 py-1 rounded-full text-[11px] font-bold transition-colors ${
-                    hiddenDifficulty === opt.id
-                      ? 'bg-white/15 text-white'
-                      : 'text-sp-text-muted hover:text-white'
+                  onClick={() => {
+                    if (runState === 'preview') stopEverything();
+                    else startSoundPreview();
+                  }}
+                  className={`px-3 py-1.5 rounded-xl border-[2px] border-[#121212] font-mono text-[11px] font-bold transition-colors ${
+                    runState === 'preview'
+                      ? 'bg-[#2B59FF] text-white'
+                      : 'bg-[#FFFBF0] text-[#121212] hover:bg-[#F4ECDC]'
                   }`}
                 >
-                  {opt.label}
+                  {runState === 'preview' ? '■ MUTE' : '♪ HEAR'}
                 </button>
-              ))}
-            </>
-          )}
 
-          <span className="h-4 w-px bg-white/[0.08]" aria-hidden />
+                <div className="inline-flex items-center gap-1.5 px-2 py-1 rounded-xl bg-[#FFFBF0] border-[2px] border-[#121212]">
+                  <button
+                    type="button"
+                    onClick={() => setBpm((b) => Math.max(40, b - 4))}
+                    className="w-5 h-5 rounded border border-[#121212] bg-[#F4ECDC] font-mono text-xs font-bold leading-none hover:bg-[#D8FF2E]"
+                    aria-label="Decrease BPM"
+                  >
+                    −
+                  </button>
+                  <span className="font-mono text-[11px] font-bold tabular-nums min-w-[54px] text-center">
+                    {bpm} BPM
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setBpm((b) => Math.min(180, b + 4))}
+                    className="w-5 h-5 rounded border border-[#121212] bg-[#F4ECDC] font-mono text-xs font-bold leading-none hover:bg-[#D8FF2E]"
+                    aria-label="Increase BPM"
+                  >
+                    +
+                  </button>
+                </div>
+              </div>
 
-          {/* Clean Sound / Beat Popover Trigger */}
-          <div ref={soundMenuRef} className="relative">
-            <button
-              type="button"
-              onClick={() => setSoundMenuOpen((o) => !o)}
-              className="px-3 py-1 rounded-full text-xs font-semibold text-sp-text-sub hover:text-white hover:bg-white/[0.06] transition-colors inline-flex items-center gap-1.5"
-            >
-              <span
-                className={`w-1.5 h-1.5 rounded-full ${
-                  grooveStyle === 'off' ? 'bg-white/25' : 'bg-sp-green'
-                }`}
-              />
-              <span>{activeGrooveShort}</span>
-            </button>
-
-            {soundMenuOpen && (
-              <div className="absolute bottom-full right-0 mb-3 w-72 rounded-2xl bg-[#131823] border border-white/12 p-4 shadow-2xl space-y-4 z-30 text-xs">
-                {/* Input Guitar Amplifier Section */}
-                <div className="space-y-2.5 pb-3.5 border-b border-white/[0.08]">
-                  <div className="flex items-center justify-between">
-                    <span className="text-[10px] font-bold uppercase tracking-widest text-amber-300">
-                      Input Guitar Amp
-                    </span>
+              {/* Center: Practice Mode Pills */}
+              <div className="inline-flex items-center gap-1 p-0.5 rounded-xl bg-[#F4ECDC] border-[2px] border-[#121212]">
+                {MODE_ITEMS.map((m) => {
+                  const active = mode === m.id;
+                  const done = completedModes.includes(m.id);
+                  return (
                     <button
+                      key={m.id}
                       type="button"
-                      onClick={() =>
-                        void updateAmpSettings({ enabled: !ampSettings.enabled })
-                      }
-                      className={`px-2.5 py-0.5 rounded-full text-[11px] font-bold transition-colors ${
-                        ampSettings.enabled
-                          ? 'bg-amber-400 text-black'
-                          : 'bg-white/10 text-sp-text-sub hover:text-white'
+                      onClick={() => handleSwitchMode(m.id)}
+                      className={`px-2.5 py-1 rounded-lg font-mono text-[10.5px] font-bold transition-colors ${
+                        active
+                          ? 'bg-[#121212] text-[#D8FF2E]'
+                          : 'text-[#57534A] hover:text-[#121212]'
                       }`}
                     >
-                      {ampSettings.enabled ? 'On' : 'Off'}
+                      {m.label}
+                      {done ? ' ✓' : ''}
                     </button>
-                  </div>
+                  );
+                })}
+              </div>
 
-                  <div className="grid grid-cols-4 gap-1">
-                    {AMP_PRESETS.map((p) => {
-                      const sel = ampSettings.preset === p.id;
-                      return (
-                        <button
-                          key={p.id}
-                          type="button"
-                          onClick={() =>
-                            void updateAmpSettings({
-                              preset: p.id as AmpPresetId,
-                              drive: p.defaultDrive,
-                              reverb: p.defaultReverb,
-                            })
-                          }
-                          className={`py-1 rounded-md text-[11px] font-bold transition-colors ${
-                            sel
-                              ? 'bg-amber-400/20 text-amber-300 border border-amber-400/40'
-                              : 'bg-black/40 text-sp-text-muted hover:text-white border border-white/[0.06]'
-                          }`}
-                        >
-                          {p.shortLabel}
-                        </button>
-                      );
-                    })}
-                  </div>
+              {/* Right: Pedals & Forensic Rig Drawer Toggle */}
+              <button
+                type="button"
+                onClick={() => setDetailOpen(true)}
+                className="px-3.5 py-1.5 rounded-xl border-[2.2px] border-[#121212] bg-[#2B59FF] text-white font-mono text-[11px] font-bold shadow-brutal-xs hover:bg-[#2147DB]"
+              >
+                🎛️ PEDALS & RIG
+              </button>
+            </div>
+          </footer>
+        </>
+      ) : (
+        /* ══════════════════════════════════════════════════════════════════
+           SCREEN 03 (§2.6): COUPLED STAFF+TAB PITCH RIBBON + COMPACT <=215px STOMPBOXES
+           ══════════════════════════════════════════════════════════════════ */
+        <div className="flex-1 min-h-0 px-4 py-3 max-w-[1440px] mx-auto w-full flex flex-col gap-3 overflow-hidden">
+          {/* Compact Post-Take Celebration Strip (<= 8 word Mambo Buddy stamp!) */}
+          <div className="neo-card bg-[#D8FF2E] px-4 py-2 flex items-center justify-between gap-3 flex-wrap shrink-0">
+            <div className="flex items-center gap-2.5 flex-wrap">
+              <span className="px-2.5 py-1 rounded-xl bg-[#121212] text-[#D8FF2E] font-mono text-xs font-bold">
+                ★ {accuracyPct}% IN POCKET!
+              </span>
+              <span className="px-2.5 py-1 rounded-xl bg-[#FFFBF0] border-2 border-[#121212] font-mono text-xs font-bold text-[#121212]">
+                {'★'.repeat(displayStars)} {displayStars}/3 PLECTRUMS
+              </span>
+              <span className="px-2.5 py-1 rounded-xl bg-[#2B59FF] text-white border-2 border-[#121212] font-mono text-xs font-bold">
+                +2.1¢ · 14× FLOW
+              </span>
 
-                  <div className="space-y-1.5 pt-0.5">
-                    <div className="flex items-center justify-between text-[10px] text-sp-text-muted">
-                      <span>Drive</span>
-                      <span>{Math.round(ampSettings.drive * 100)}%</span>
-                    </div>
-                    <input
-                      type="range"
-                      min={0}
-                      max={100}
-                      value={Math.round(ampSettings.drive * 100)}
-                      onChange={(e) =>
-                        void updateAmpSettings({ drive: Number(e.target.value) / 100 })
-                      }
-                      className="w-full accent-amber-400 cursor-pointer h-1"
-                    />
+              {/* Tiny Mambo Buddy Stamp — strictly 6 words! */}
+              <div className="inline-flex items-center gap-2 px-2.5 py-0.5 rounded-full bg-[#FFFBF0] border-2 border-[#121212]">
+                <MamboMascotSvg mood="hype" size={24} />
+                <span className="font-mono text-[11px] font-bold text-[#121212]">
+                  “Bar 3 vibrato: pure butter (+2¢)!”
+                </span>
+              </div>
+            </div>
 
-                    <div className="flex items-center justify-between text-[10px] text-sp-text-muted">
-                      <span>Room Air</span>
-                      <span>{Math.round(ampSettings.reverb * 100)}%</span>
-                    </div>
-                    <input
-                      type="range"
-                      min={0}
-                      max={100}
-                      value={Math.round(ampSettings.reverb * 100)}
-                      onChange={(e) =>
-                        void updateAmpSettings({ reverb: Number(e.target.value) / 100 })
-                      }
-                      className="w-full accent-amber-400 cursor-pointer h-1"
-                    />
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setDetailOpen(false)}
+                className="px-3 py-1.5 rounded-xl border-2 border-[#121212] bg-[#FFFBF0] font-mono text-[11px] font-bold hover:bg-[#F4ECDC]"
+              >
+                ↻ BACK TO STAGE
+              </button>
+              {nextCourse && (isNextUnlocked || demoMode) && (
+                <button
+                  type="button"
+                  onClick={() => onSelectCourse(nextCourse, 'play')}
+                  className="px-3.5 py-1.5 rounded-xl border-2 border-[#121212] bg-[#2B59FF] text-white font-mono text-[11px] font-bold shadow-brutal-xs"
+                >
+                  NEXT ISLAND →
+                </button>
+              )}
+            </div>
+          </div>
 
-                    <div className="flex items-center justify-between text-[10px] text-sp-text-muted">
-                      <span>Amp Level</span>
-                      <span>{Math.round(ampSettings.volume * 100)}%</span>
-                    </div>
-                    <input
-                      type="range"
-                      min={0}
-                      max={100}
-                      value={Math.round(ampSettings.volume * 100)}
-                      onChange={(e) =>
-                        void updateAmpSettings({ volume: Number(e.target.value) / 100 })
-                      }
-                      className="w-full accent-amber-400 cursor-pointer h-1"
-                    />
-                  </div>
+          {/* UPPER PANEL (58%+ height): Coupled 5-Line Staff + 6-Line TAB with Forensic Pitch Ribbon */}
+          <div className="flex-1 min-h-0">
+            <RisoEngravedScore
+              course={course}
+              mode="play"
+              vanishPass={1}
+              windowStartBar={windowStartBar}
+              onWindowStartBarChange={setWindowStartBar}
+              loopRange="all"
+              runState="results"
+              motionRef={motionRef}
+              noteStatusRef={noteStatusRef}
+              onSelectBar={handleSelectBar}
+              forensicMode={true}
+              demoMode={demoMode}
+            />
+          </div>
+
+          {/* LOWER PANEL (Strictly <= 215px tall!): Muscular Compact 3-Pedal Stompbox Rack + Backing Groove */}
+          <div className="h-[212px] max-h-[215px] shrink-0 grid grid-cols-1 lg:grid-cols-12 gap-3">
+            {/* 3-Pedal Tactile Stompbox Rack (Enlarged 42x42px Rotary Knobs, Zero Tall Empty Slabs!) */}
+            <div className="lg:col-span-8 neo-card bg-[#FFFBF0] p-3 flex flex-col justify-between h-full">
+              <div className="flex items-center justify-between gap-2 shrink-0">
+                <div className="flex items-center gap-2">
+                  <span className="px-2 py-0.5 rounded-lg bg-[#121212] text-[#D8FF2E] font-mono text-[10px] font-bold">
+                    3-PEDAL STOMPBOX RACK
+                  </span>
+                  <span className="font-mono text-[10px] font-bold text-[#57534A]">
+                    WASM AMP MONITOR
+                  </span>
                 </div>
+                <button
+                  type="button"
+                  onClick={() => void updateAmpSettings({ enabled: !ampSettings.enabled })}
+                  className={`px-2.5 py-0.5 rounded-full border-2 border-[#121212] font-mono text-[10px] font-bold ${
+                    ampOn ? 'bg-[#D8FF2E] text-[#121212]' : 'bg-[#F4ECDC] text-[#57534A]'
+                  }`}
+                >
+                  {ampOn ? '● RIG LIVE' : '○ BYPASS'}
+                </button>
+              </div>
 
-                <div>
-                  <label className="block text-[10px] font-bold uppercase tracking-widest text-sp-text-muted mb-1.5">
-                    Drum Groove
-                  </label>
-                  <select
-                    value={grooveStyle}
-                    onChange={(e) => setGrooveStyle(e.target.value as GrooveStyleId)}
-                    className="w-full bg-black/50 text-white font-semibold px-2.5 py-1.5 rounded-lg border border-white/12 focus:outline-none"
+              <div className="grid grid-cols-3 gap-3 flex-1 min-h-0 mt-2">
+                {STOMPBOXES.map((pedal) => {
+                  const active = activeStomp === pedal.id;
+                  return (
+                    <button
+                      key={pedal.id}
+                      type="button"
+                      onClick={() => handleSelectStomp(pedal.id)}
+                      className={`rounded-2xl border-[2.5px] border-[#121212] px-3 py-2.5 text-left flex flex-col justify-between transition-all cursor-pointer ${
+                        active
+                          ? 'border-b-[5px] -translate-y-[1px] ring-2 ring-[#D8FF2E]'
+                          : 'border-b-[3px] opacity-90 hover:opacity-100'
+                      }`}
+                      style={{ backgroundColor: pedal.bg, color: pedal.text }}
+                    >
+                      {/* Top LED + Compact Row of Enlarged 42x42px Rotary Knobs */}
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-1.5">
+                          <span
+                            className="w-2.5 h-2.5 rounded-full border-[1.8px] border-[#121212]"
+                            style={{ backgroundColor: active ? pedal.led : 'rgba(255,255,255,0.28)' }}
+                          />
+                          <span className="font-mono text-[9px] font-bold tracking-wider opacity-90">
+                            {active ? 'ACTIVE' : 'BYPASS'}
+                          </span>
+                        </div>
+
+                        {/* Two Muscular 42x42px Rotary Knobs Side-by-Side */}
+                        <div className="flex items-center gap-2.5">
+                          <div className="flex flex-col items-center">
+                            <div className="w-[42px] h-[42px] rounded-full bg-[#121212] border-2 border-[#FFFBF0] relative flex items-center justify-center shadow-sm">
+                              <span
+                                className="w-1 h-4 bg-[#D8FF2E] rounded-full origin-bottom -translate-y-1.5"
+                                style={{ transform: `rotate(${-120 + pedal.drivePct * 2.4}deg)` }}
+                              />
+                            </div>
+                            <span className="font-mono text-[8.5px] font-bold mt-0.5 opacity-95">
+                              DRV {pedal.drivePct}%
+                            </span>
+                          </div>
+                          <div className="flex flex-col items-center">
+                            <div className="w-[42px] h-[42px] rounded-full bg-[#121212] border-2 border-[#FFFBF0] relative flex items-center justify-center shadow-sm">
+                              <span
+                                className="w-1 h-4 bg-[#D8FF2E] rounded-full origin-bottom -translate-y-1.5"
+                                style={{ transform: `rotate(${-120 + pedal.roomPct * 2.4}deg)` }}
+                              />
+                            </div>
+                            <span className="font-mono text-[8.5px] font-bold mt-0.5 opacity-95">
+                              AIR {pedal.roomPct}%
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Pedal Title + Tactile Footswitch Bar */}
+                      <div className="flex items-end justify-between gap-2 mt-1">
+                        <div className="min-w-0">
+                          <div className="font-syne text-[13px] font-extrabold leading-tight truncate">
+                            {pedal.name}
+                          </div>
+                          <div className="font-mono text-[9px] font-bold opacity-80">
+                            {pedal.tag}
+                          </div>
+                        </div>
+                        <div className="px-2.5 py-1 rounded-lg bg-[#FFFBF0] border-2 border-[#121212] font-mono text-[9.5px] font-bold text-[#121212] shrink-0">
+                          {active ? 'ON ✓' : 'STOMP'}
+                        </div>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Compact Backing Groove & Mix Selector (Matches <= 215px Height!) */}
+            <div className="lg:col-span-4 neo-card bg-[#FFFBF0] p-3 flex flex-col justify-between h-full">
+              <div className="flex items-center justify-between gap-2">
+                <span className="px-2 py-0.5 rounded-lg bg-[#2B59FF] text-white border border-[#121212] font-mono text-[10px] font-bold">
+                  BACKING GROOVE
+                </span>
+                <span className="font-mono text-[11px] font-bold text-[#121212] tabular-nums">
+                  {bpm} BPM
+                </span>
+              </div>
+
+              <div className="grid grid-cols-2 gap-1.5 my-1.5">
+                {GROOVE_STYLE_META.map((g) => (
+                  <button
+                    key={g.id}
+                    type="button"
+                    onClick={() => setGrooveStyle(g.id)}
+                    className={`px-2.5 py-1.5 rounded-lg border-[1.8px] border-[#121212] font-mono text-[10.5px] font-bold text-left transition-colors ${
+                      grooveStyle === g.id
+                        ? 'bg-[#D8FF2E] text-[#121212]'
+                        : 'bg-[#FFFBF0] text-[#121212] hover:bg-[#F4ECDC]'
+                    }`}
                   >
-                    {GROOVE_STYLE_META.map((g) => (
-                      <option key={g.id} value={g.id}>
-                        {g.label}
-                      </option>
-                    ))}
-                  </select>
-                </div>
+                    {g.shortLabel}
+                  </button>
+                ))}
+              </div>
 
-                <div>
-                  <label className="block text-[10px] font-bold uppercase tracking-widest text-sp-text-muted mb-1.5">
-                    Guide Guitar Synth
-                  </label>
-                  <select
-                    value={guideGuitar}
-                    onChange={(e) => setGuideGuitar(e.target.value as GuideGuitarLevel)}
-                    className="w-full bg-black/50 text-white font-semibold px-2.5 py-1.5 rounded-lg border border-white/12 focus:outline-none"
-                  >
-                    <option value="off">Off (Mic Only)</option>
-                    <option value="soft">Soft Guide</option>
-                    <option value="full">Full Synth</option>
-                  </select>
-                </div>
-
-                <div>
-                  <div className="flex justify-between text-[10px] font-bold uppercase tracking-widest text-sp-text-muted mb-1">
-                    <span>Mix Volume</span>
+              <div className="pt-2 border-t border-dashed border-[#121212]/25 flex items-center gap-3">
+                <div className="flex-1">
+                  <div className="flex items-center justify-between font-mono text-[10px] font-bold text-[#57534A] mb-0.5">
+                    <span>MIX</span>
                     <span>{volumePct}%</span>
                   </div>
                   <input
@@ -1220,78 +1105,23 @@ export function CourseStageView({
                     max={100}
                     value={volumePct}
                     onChange={(e) => handleVolumeChange(Number(e.target.value))}
-                    className="w-full accent-emerald-400 cursor-pointer"
+                    className="w-full accent-[#2B59FF] cursor-pointer h-2"
+                    aria-label="Backing mix volume"
                   />
                 </div>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setGuideGuitar((prev) => (prev === 'off' ? 'soft' : prev === 'soft' ? 'full' : 'off'))
+                  }
+                  className="px-2.5 py-1 rounded-lg border-[1.8px] border-[#121212] bg-[#F4ECDC] font-mono text-[10px] font-bold shrink-0"
+                >
+                  GUIDE: {guideGuitar.toUpperCase()}
+                </button>
               </div>
-            )}
+            </div>
           </div>
         </div>
-      </div>
-
-      {/* Minimalist Results & Stage Unlock Card (only visible after run completes) */}
-      {runState === 'results' && summary && (
-        <section className="rounded-2xl border border-white/10 bg-[#111620] p-5 flex items-center justify-between gap-6 flex-wrap">
-          <div className="space-y-1">
-            <div className="flex items-center gap-2.5">
-              <span className="text-2xl font-extrabold text-white tabular-nums">
-                {Math.round(summary.accuracy * 100)}%
-              </span>
-              <span className="text-xs font-semibold text-sp-text-sub">
-                {summary.hits}/{summary.hits + summary.misses} notes
-                {summary.meanCents != null
-                  ? ` · ${summary.meanCents >= 0 ? `+${summary.meanCents}c` : `${summary.meanCents}c`}`
-                  : ''}
-              </span>
-              <span className="text-sm tracking-widest text-amber-400">
-                {'★'.repeat(summary.starsEarned)}
-                <span className="text-white/15">
-                  {'★'.repeat(3 - summary.starsEarned)}
-                </span>
-              </span>
-            </div>
-
-            {summary.newlyUnlockedCourse ? (
-              <p className="text-xs font-bold text-amber-300">
-                Unlocked Stage #{summary.newlyUnlockedCourse.order}:{' '}
-                {summary.newlyUnlockedCourse.title}
-              </p>
-            ) : (
-              <p className="text-xs text-sp-text-muted">
-                {summary.passed
-                  ? 'Stage cleared — try Shadow or Hidden mode to master it.'
-                  : 'Reach 60% accuracy to clear this stage and unlock the next.'}
-              </p>
-            )}
-          </div>
-
-          <div className="flex items-center gap-2 flex-wrap">
-            <button
-              type="button"
-              onClick={handlePrimaryStart}
-              className="px-4 py-1.5 rounded-full text-xs font-bold bg-white/10 text-white hover:bg-white/15 transition"
-            >
-              Replay
-            </button>
-            {nextCourse && (isNextUnlocked || summary.newlyUnlockedCourse != null) && (
-              <button
-                type="button"
-                onClick={() => onSelectCourse(nextCourse, 'play')}
-                className="px-4 py-1.5 rounded-full text-xs font-extrabold text-black transition-transform hover:scale-[1.02]"
-                style={{ backgroundColor: chapter.accentHex }}
-              >
-                Next Stage &rarr;
-              </button>
-            )}
-            <button
-              type="button"
-              onClick={onBackToRoadmap}
-              className="px-3 py-1.5 rounded-full text-xs font-semibold text-sp-text-muted hover:text-white"
-            >
-              Roadmap
-            </button>
-          </div>
-        </section>
       )}
     </div>
   );

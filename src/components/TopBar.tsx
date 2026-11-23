@@ -1,18 +1,30 @@
 import { useEffect, useRef } from 'react';
 import { useAudioEngineControl } from '../context/AudioEngineContext';
 
+export type NavViewKind = 'roadmap' | 'setup' | 'history';
+
 interface TopBarProps {
+  activeNav: NavViewKind | null;
   stageTitle: string | null;
+  onNavigate: (nav: NavViewKind) => void;
   onBack: (() => void) | null;
-  onOpenSetup?: () => void;
+  demoMode?: boolean;
+  dimmed?: boolean;
 }
 
-export function TopBar({ stageTitle, onBack, onOpenSetup }: TopBarProps) {
+const WEEKLY_PIPS = [true, true, true, true, false] as const;
+
+export function TopBar({
+  activeNav,
+  stageTitle,
+  onNavigate,
+  onBack,
+  demoMode = false,
+  dimmed = false,
+}: TopBarProps) {
   const {
     isListening,
     isInputGated,
-    detectedChannelCount,
-    activeChannelIndex,
     ampSettings,
     asioStatus,
     detectionRef,
@@ -24,7 +36,7 @@ export function TopBar({ stageTitle, onBack, onOpenSetup }: TopBarProps) {
   const noteSpanRef = useRef<HTMLSpanElement | null>(null);
   const meterFillRef = useRef<HTMLDivElement | null>(null);
 
-  // Direct DOM updates for the tiny live-note & level indicator -> ZERO React re-renders!
+  // Zero-re-render DOM telemetry tick
   useEffect(() => {
     if (!isListening || isInputGated) return undefined;
 
@@ -45,131 +57,181 @@ export function TopBar({ stageTitle, onBack, onOpenSetup }: TopBarProps) {
     return () => window.clearInterval(id);
   }, [detectionRef, isInputGated, isListening]);
 
+  const showSignalPill = (isListening && !isInputGated) || demoMode;
+  const ampActive = ampSettings.enabled || demoMode;
+  const micActive = isListening || demoMode;
+
   return (
-    <header className="h-12 px-5 bg-[#0a0c10] border-b border-white/[0.06] flex items-center justify-between shrink-0">
-      <div className="flex items-center gap-4 min-w-0">
+    <header
+      className={`h-[56px] px-4 md:px-5 bg-[#FFFBF0] border-b-[2.5px] border-[#121212] flex items-center justify-between gap-3 shrink-0 z-30 transition-opacity duration-300 ${
+        dimmed ? 'opacity-25 hover:opacity-100' : 'opacity-100'
+      }`}
+    >
+      {/* Left: Brand Emblem + Global Nav Switcher (or Back to Tour Map) */}
+      <div className="flex items-center gap-3 min-w-0">
         {onBack ? (
           <button
             type="button"
             onClick={onBack}
-            className="inline-flex items-center gap-1.5 text-xs font-bold text-sp-text-sub hover:text-white transition-colors"
+            className="neo-btn-paper px-3 py-1 text-[11px] font-mono uppercase rounded-xl"
           >
-            <svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor" aria-hidden>
+            <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor" aria-hidden>
               <path d="M11.03 3.97a.75.75 0 0 1 0 1.06L7.56 8.5l3.47 3.47a.75.75 0 1 1-1.06 1.06l-4-4a.75.75 0 0 1 0-1.06l4-4a.75.75 0 0 1 1.06 0z" />
             </svg>
-            <span>Roadmap</span>
+            <span>Tour Map</span>
           </button>
         ) : (
-          <span className="text-base font-extrabold tracking-tight text-white">
-            Sonic<span className="text-sp-green">Mambo</span>
-          </span>
+          <button
+            type="button"
+            onClick={() => onNavigate('roadmap')}
+            className="flex items-center gap-2 shrink-0 group"
+          >
+            <div className="w-8 h-8 rounded-xl bg-[#D8FF2E] border-2 border-[#121212] shadow-brutal-xs flex items-center justify-center group-hover:-translate-y-0.5 transition-transform">
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" aria-hidden>
+                <path
+                  d="M13 2L4.5 13.5H11.5L10.5 22L19.5 10.5H12.5L13 2Z"
+                  fill="#121212"
+                  stroke="#121212"
+                  strokeWidth="1.5"
+                  strokeLinejoin="round"
+                />
+              </svg>
+            </div>
+            <span className="font-syne text-lg font-extrabold tracking-tight text-[#121212] leading-none">
+              SonicMambo
+            </span>
+          </button>
+        )}
+
+        {/* Single-row global navigation pills (replaces left Sidebar completely!) */}
+        {!onBack && (
+          <nav
+            aria-label="Primary navigation"
+            className="inline-flex items-center gap-1 p-1 rounded-xl bg-[#F4ECDC] border-2 border-[#121212]"
+          >
+            {(
+              [
+                { id: 'roadmap', label: 'Tour Map' },
+                { id: 'setup', label: 'Rig & Tuner' },
+                { id: 'history', label: 'Log' },
+              ] as const
+            ).map((item) => {
+              const active = activeNav === item.id;
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => onNavigate(item.id)}
+                  className={`px-3 py-1 rounded-lg font-mono text-[11px] font-bold uppercase tracking-wide transition-all ${
+                    active
+                      ? 'bg-[#D8FF2E] text-[#121212] border-2 border-[#121212] shadow-brutal-xs -my-0.5'
+                      : 'text-[#423E37] hover:text-[#121212] border-2 border-transparent'
+                  }`}
+                >
+                  {item.label}
+                </button>
+              );
+            })}
+          </nav>
         )}
 
         {stageTitle && (
-          <span className="text-xs font-semibold text-sp-text-muted truncate max-w-[340px] hidden sm:inline">
-            {stageTitle}
-          </span>
+          <div className="hidden md:flex items-center gap-2 px-3 py-1 rounded-full bg-[#F4ECDC] border-2 border-[#121212] max-w-[380px]">
+            <span className="w-2 h-2 rounded-full bg-[#2B59FF] shrink-0" />
+            <span className="font-mono text-[11px] font-bold text-[#121212] truncate">
+              {stageTitle}
+            </span>
+          </div>
         )}
       </div>
 
-      <div className="flex items-center gap-2">
+      {/* Right: Calm Weekly Tape Counter + Live Input Pill + Amp & Mic Hardware Toggles */}
+      <div className="flex items-center gap-2 shrink-0">
+        {/* Silent, Guilt-Free Weekly Groove Tape Counter */}
+        <div
+          className="hidden lg:inline-flex items-center gap-2 px-2.5 py-1 rounded-full bg-[#F4ECDC] border-2 border-[#121212]"
+          title="Weekly practice minutes"
+        >
+          <span className="font-mono text-[11px] font-bold text-[#121212] tabular-nums">
+            142/180m
+          </span>
+          <div className="flex items-center gap-0.5" aria-hidden>
+            {WEEKLY_PIPS.map((filled, idx) => (
+              <span
+                key={idx}
+                className={`w-2 h-2.5 rounded-[2px] border border-[#121212] ${
+                  filled ? 'bg-[#1CE088]' : 'bg-white'
+                }`}
+              />
+            ))}
+          </div>
+        </div>
+
         {asioStatus.asioConnected && (
           <button
             type="button"
-            onClick={onOpenSetup}
-            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-sky-400/15 border border-sky-400/40 text-sky-300 text-[11px] font-bold tabular-nums"
-            title={`${asioStatus.driverName} (${asioStatus.bufferSize} samples @ ${asioStatus.sampleRate} Hz)`}
+            onClick={() => onNavigate('setup')}
+            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-[#2B59FF] border-2 border-[#121212] text-white font-mono text-[10px] font-bold tabular-nums shadow-brutal-xs"
+            title={`${asioStatus.driverName} (${asioStatus.bufferSize} smp @ ${asioStatus.sampleRate} Hz)`}
           >
-            <span>&#9889; ASIO {asioStatus.latencyMs.toFixed(1)}ms</span>
+            <span>ASIO {asioStatus.latencyMs.toFixed(1)}ms</span>
           </button>
         )}
 
-        {isListening && !isInputGated && (
-          <div
-            className="hidden sm:flex items-center gap-2 px-2.5 py-1 rounded-full bg-white/[0.04] border border-white/[0.07] text-xs"
-            title={
-              detectedChannelCount > 1 && activeChannelIndex >= 0
-                ? `Active input: Channel ${activeChannelIndex + 1} of ${detectedChannelCount}`
-                : 'Live guitar signal'
-            }
-          >
+        {showSignalPill && (
+          <div className="hidden sm:flex items-center gap-2 px-2.5 py-1 rounded-full bg-white border-2 border-[#121212] shadow-brutal-xs">
             <span
               ref={noteSpanRef}
-              className="font-bold text-white w-6 text-center tabular-nums text-[11px]"
+              className="font-mono font-bold text-[#121212] w-6 text-center tabular-nums text-[11px]"
             >
-              &mdash;
+              {demoMode && !isListening ? 'F#4' : '—'}
             </span>
-            <div className="w-12 h-1 rounded-full bg-white/10 overflow-hidden">
+            <div className="w-10 h-1.5 rounded-full bg-[#F4ECDC] border border-[#121212] overflow-hidden">
               <div
                 ref={meterFillRef}
-                className="h-full bg-sp-green"
-                style={{ width: '0%' }}
+                className="h-full bg-[#1CE088]"
+                style={{ width: demoMode && !isListening ? '76%' : '0%' }}
               />
             </div>
-            {detectedChannelCount > 1 && activeChannelIndex >= 0 && (
-              <span className="text-[10px] font-semibold text-sp-text-muted">
-                Ch{activeChannelIndex + 1}
-              </span>
-            )}
+            <span className="font-mono text-[9px] font-bold text-[#57534A]">HI-Z</span>
           </div>
         )}
 
         <button
           type="button"
           onClick={() => void updateAmpSettings({ enabled: !ampSettings.enabled })}
-          className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full border transition-colors ${
-            ampSettings.enabled
-              ? 'bg-amber-400/15 border-amber-400/40 text-amber-300'
-              : 'bg-white/[0.04] hover:bg-white/[0.10] border-white/[0.08] text-sp-text-sub'
+          className={`neo-btn-3d px-2.5 py-1 rounded-xl text-[11px] font-mono ${
+            ampActive ? 'bg-[#FF8A00] text-[#121212]' : 'bg-white text-[#121212]'
           }`}
-          title="Live guitar tube amp monitor (use headphones or interface)"
+          title="Tube amp monitor"
         >
           <span
-            className={`w-2 h-2 rounded-full ${
-              ampSettings.enabled ? 'bg-amber-400' : 'bg-white/25'
+            className={`w-2 h-2 rounded-full border border-[#121212] ${
+              ampActive ? 'bg-[#D8FF2E]' : 'bg-[#D6CEBC]'
             }`}
           />
-          <span className="text-xs font-semibold">Amp</span>
+          <span>AMP</span>
         </button>
 
         <button
           type="button"
           onClick={() => (isListening ? stop() : void start())}
-          className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-white/[0.05] hover:bg-white/[0.10] border border-white/[0.08] transition-colors"
-          title={isListening ? 'Click to mute microphone' : 'Click to turn microphone on'}
+          className={`neo-btn-3d px-2.5 py-1 rounded-xl text-[11px] font-mono ${
+            isInputGated
+              ? 'bg-[#FF8A00] text-[#121212]'
+              : micActive
+                ? 'bg-[#D8FF2E] text-[#121212]'
+                : 'bg-[#F4ECDC] text-[#121212]'
+          }`}
+          title={isListening ? 'Mute input' : 'Enable guitar input'}
         >
           <span
-            className={`w-2 h-2 rounded-full ${
-              isInputGated
-                ? 'bg-amber-400'
-                : isListening
-                  ? 'bg-sp-green'
-                  : 'bg-white/25'
+            className={`w-2 h-2 rounded-full border border-[#121212] ${
+              isInputGated ? 'bg-white' : micActive ? 'bg-[#1CE088]' : 'bg-[#D6CEBC]'
             }`}
           />
-          <span className="text-xs font-semibold text-sp-text-sub">
-            {isInputGated ? 'Speaker' : isListening ? 'Mic On' : 'Mic Off'}
-          </span>
+          <span>{isInputGated ? 'SPKR' : micActive ? 'MIC ON' : 'MIC'}</span>
         </button>
-
-        {onOpenSetup && (
-          <button
-            type="button"
-            onClick={onOpenSetup}
-            className="p-1.5 rounded-full bg-white/[0.04] hover:bg-white/[0.10] border border-white/[0.08] text-sp-text-sub hover:text-white transition-colors"
-            title="Audio device, channel & tuner"
-          >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden>
-              <path d="M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z" stroke="currentColor" strokeWidth="2" />
-              <path
-                d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 1.55V21a2 2 0 1 1-4 0v-.09A1.7 1.7 0 0 0 9 19.4a1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-1.55-1H3a2 2 0 1 1 0-4h.09A1.7 1.7 0 0 0 4.6 9a1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-1.55V3a2 2 0 1 1 4 0v.09A1.7 1.7 0 0 0 15 4.6a1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.7 1.7 0 0 0 19.4 9c.24.58.77.98 1.4 1.09.16.03.32.04.49.04H21a2 2 0 1 1 0 4h-.09c-.17 0-.33.01-.49.04-.63.11-1.16.51-1.4 1.09z"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinejoin="round"
-              />
-            </svg>
-          </button>
-        )}
       </div>
     </header>
   );
