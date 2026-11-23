@@ -536,10 +536,21 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): UseAudioEng
       loudness: 0,
       error: null,
     });
+
+    if (asioBridgeClient.isAsioActive()) {
+      asioBridgeClient.sendAmpSettings({
+        ...ampSettingsRef.current,
+        enabled: false,
+      });
+    }
   }, []);
 
   const start = useCallback(
     async (overrideDeviceId?: string) => {
+      if (!asioBridgeClient.isAsioActive()) {
+        await asioBridgeClient.probeAndConnect();
+      }
+
       if (asioBridgeClient.isAsioActive()) {
         isListeningRef.current = true;
         const st = asioBridgeClient.getStatus();
@@ -570,7 +581,7 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): UseAudioEng
           typeof overrideDeviceId === 'string' ? overrideDeviceId : selectedDeviceIdRef.current;
 
         try {
-          const audioContext = new AudioContext();
+          const audioContext = new AudioContext({ latencyHint: 0 });
           audioContextRef.current = audioContext;
         const resumePromise =
           audioContext.state === 'suspended'
@@ -839,7 +850,15 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): UseAudioEng
         enabled: next.enabled && !inputGatedRef.current,
       });
 
+      if (!asioBridgeClient.isAsioActive() && next.enabled) {
+        await asioBridgeClient.probeAndConnect();
+      }
+
       if (asioBridgeClient.isAsioActive()) {
+        asioBridgeClient.sendAmpSettings({
+          ...next,
+          enabled: next.enabled && !inputGatedRef.current,
+        });
         return;
       }
 
@@ -974,10 +993,11 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): UseAudioEng
       });
 
       if (st.asioConnected) {
-        // Shut down browser WebAudio capture if it was open so ASIO owns the interface cleanly
+        // Shut down browser WebAudio capture/output if open so ASIO owns the interface cleanly
         if (audioContextRef.current) {
           stop();
         }
+        soundGenerator.closeWebAudioContext();
         isListeningRef.current = true;
         setSampleRate(st.sampleRate);
         setAudioLatencyMs(Math.round(st.latencyMs));

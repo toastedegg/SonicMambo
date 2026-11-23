@@ -50,7 +50,7 @@ class AsioBridgeClient {
   private status: AsioBridgeStatus = { ...DISCONNECTED_STATUS };
   private statusListeners = new Set<StatusListener>();
   private telemetryListeners = new Set<TelemetryListener>();
-  private connecting = false;
+  private connectingPromise: Promise<boolean> | null = null;
   private autoPollTimer = 0;
 
   getStatus(): AsioBridgeStatus {
@@ -84,31 +84,54 @@ class AsioBridgeClient {
 
   /**
    * Quietly checks if `sonicmambo-bridge` is listening on `127.0.0.1:17420` and upgrades
-   * to a binary `TCP_NODELAY` WebSocket if reachable.
+   * to a binary `TCP_NODELAY` WebSocket if reachable. In Vite dev mode, wakes the local
+   * native ASIO service automatically via `/__sonicmambo/ensure-bridge` if needed.
    */
   async probeAndConnect(): Promise<boolean> {
     if (typeof window === 'undefined') return false;
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       return this.status.asioConnected;
     }
-    if (this.connecting) return false;
+    if (this.connectingPromise) {
+      return this.connectingPromise;
+    }
 
-    this.connecting = true;
-    try {
-      const controller = new AbortController();
-      const timeout = window.setTimeout(() => controller.abort(), 350);
-      let ok = false;
-      try {
-        const resp = await fetch(BRIDGE_HTTP_URL, {
-          method: 'GET',
-          mode: 'cors',
-          signal: controller.signal,
-        });
-        ok = resp.ok;
-      } catch {
-        ok = false;
-      } finally {
-        window.clearTimeout(timeout);
+    this.connectingPromise = (async () => {
+      const checkStatus = async (timeoutMs: number): Promise<boolean> => {
+        const controller = new AbortController();
+        const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+        try {
+          const resp = await fetch(BRIDGE_HTTP_URL, {
+            method: 'GET',
+            mode: 'cors',
+            signal: controller.signal,
+          });
+          return resp.ok;
+        } catch {
+          return false;
+        } finally {
+          window.clearTimeout(timeout);
+        }
+      };
+
+      let ok = await checkStatus(300);
+
+      if (!ok && import.meta.env.DEV) {
+        try {
+          const wakeCtrl = new AbortController();
+          const wakeTimer = window.setTimeout(() => wakeCtrl.abort(), 1800);
+          try {
+            await fetch('/__sonicmambo/ensure-bridge', {
+              method: 'POST',
+              signal: wakeCtrl.signal,
+            });
+          } finally {
+            window.clearTimeout(wakeTimer);
+          }
+          ok = await checkStatus(350);
+        } catch {
+          ok = false;
+        }
       }
 
       if (!ok) {
@@ -119,9 +142,11 @@ class AsioBridgeClient {
       }
 
       return await this.openWebSocket();
-    } finally {
-      this.connecting = false;
-    }
+    })().finally(() => {
+      this.connectingPromise = null;
+    });
+
+    return this.connectingPromise;
   }
 
   startAutoDiscovery(): void {
@@ -244,6 +269,7 @@ class AsioBridgeClient {
     enabled: boolean;
     preset: string;
     drive: number;
+    tone?: number;
     reverb: number;
     volume: number;
   }): void {

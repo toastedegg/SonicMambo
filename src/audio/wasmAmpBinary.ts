@@ -390,12 +390,12 @@ export function getGuitarAmpWasmBinary(): Uint8Array {
     OP.local_set,
     L.z22,
 
-    // Stereo Room Delay Taps (circular 2048-sample buffers at 4096 and 12288)
-    // readOffL = ((dIdx - 1120) & 2047) << 2
+    // Stereo Room Delay Taps inside Haas fusion window (<18ms -> tight pick transient, zero slapback lag!)
+    // readOffL = ((dIdx - 528) & 2047) << 2  (~11.0 ms @ 48kHz)
     OP.local_get,
     L.dIdx,
     OP.i32_const,
-    ...sleb(1120),
+    ...sleb(528),
     OP.i32_sub,
     OP.i32_const,
     ...sleb(2047),
@@ -406,11 +406,11 @@ export function getGuitarAmpWasmBinary(): Uint8Array {
     OP.local_set,
     L.readOffL,
 
-    // readOffR = ((dIdx - 1690) & 2047) << 2
+    // readOffR = ((dIdx - 816) & 2047) << 2  (~17.0 ms @ 48kHz)
     OP.local_get,
     L.dIdx,
     OP.i32_const,
-    ...sleb(1690),
+    ...sleb(816),
     OP.i32_sub,
     OP.i32_const,
     ...sleb(2047),

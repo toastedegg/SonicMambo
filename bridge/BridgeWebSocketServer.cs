@@ -254,11 +254,12 @@ public sealed class BridgeWebSocketServer : IDisposable
                 case "amp":
                 {
                     bool enabled = root.TryGetProperty("enabled", out var pEn) && pEn.GetBoolean();
-                    string preset = root.TryGetProperty("preset", out var pPr) ? (pPr.GetString() ?? "blues-breakup") : "blues-breakup";
-                    float drive = root.TryGetProperty("drive", out var pDr) ? pDr.GetSingle() : 0.45f;
-                    float reverb = root.TryGetProperty("reverb", out var pRv) ? pRv.GetSingle() : 0.28f;
-                    float volume = root.TryGetProperty("volume", out var pVo) ? pVo.GetSingle() : 0.70f;
-                    _core.UpdateAmpParameters(enabled, preset, drive, reverb, volume);
+                    string preset = root.TryGetProperty("preset", out var pPr) ? (pPr.GetString() ?? "british-crunch") : "british-crunch";
+                    float drive = root.TryGetProperty("drive", out var pDr) ? pDr.GetSingle() : 0.68f;
+                    float reverb = root.TryGetProperty("reverb", out var pRv) ? pRv.GetSingle() : 0.24f;
+                    float volume = root.TryGetProperty("volume", out var pVo) ? pVo.GetSingle() : 0.78f;
+                    float tone = root.TryGetProperty("tone", out var pTo) ? pTo.GetSingle() : 0.64f;
+                    _core.UpdateAmpParameters(enabled, preset, drive, reverb, volume, tone);
                     break;
                 }
                 case "config":

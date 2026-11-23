@@ -41,4 +41,6 @@ export const GUITAR_CAPTURE_CONSTRAINTS: MediaTrackConstraints = {
   echoCancellation: false,
   noiseSuppression: false,
   autoGainControl: false,
+  // Request lowest-latency OS audio capture buffer in Chromium when falling back to WebAudio
+  ...({ latency: 0 } as MediaTrackConstraints),
 };

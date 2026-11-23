@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { useAudioEngineControl } from '../context/AudioEngineContext';
+import { AmpControlPill } from './AmpHeadPopover';
 
 export type NavViewKind = 'roadmap' | 'setup' | 'history';
 
@@ -25,12 +26,10 @@ export function TopBar({
   const {
     isListening,
     isInputGated,
-    ampSettings,
     asioStatus,
     detectionRef,
     start,
     stop,
-    updateAmpSettings,
   } = useAudioEngineControl();
 
   const noteSpanRef = useRef<HTMLSpanElement | null>(null);
@@ -58,7 +57,6 @@ export function TopBar({
   }, [detectionRef, isInputGated, isListening]);
 
   const showSignalPill = (isListening && !isInputGated) || demoMode;
-  const ampActive = ampSettings.enabled || demoMode;
   const micActive = isListening || demoMode;
 
   return (
@@ -197,21 +195,7 @@ export function TopBar({
           </div>
         )}
 
-        <button
-          type="button"
-          onClick={() => void updateAmpSettings({ enabled: !ampSettings.enabled })}
-          className={`neo-btn-3d px-2.5 py-1 rounded-xl text-[11px] font-mono ${
-            ampActive ? 'bg-[#FF8A00] text-[#121212]' : 'bg-white text-[#121212]'
-          }`}
-          title="Tube amp monitor"
-        >
-          <span
-            className={`w-2 h-2 rounded-full border border-[#121212] ${
-              ampActive ? 'bg-[#D8FF2E]' : 'bg-[#D6CEBC]'
-            }`}
-          />
-          <span>AMP</span>
-        </button>
+        <AmpControlPill demoMode={demoMode} />
 
         <button
           type="button"

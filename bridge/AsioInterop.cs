@@ -160,6 +160,7 @@ public sealed unsafe class AsioHost : IDisposable
     public bool StartDriver(AsioDriverEntry driver, int targetBufferSize = 64)
     {
         StopDriver();
+        _cmdQueue.Reset();
 
         var startedTcs = new TaskCompletionSource<bool>();
         _staThread = new Thread(() => StaThreadLoop(driver, targetBufferSize, startedTcs))
@@ -204,180 +205,189 @@ public sealed unsafe class AsioHost : IDisposable
             // Create hidden Win32 HWND on this STA thread (required by Focusrite & Steinberg ASIO drivers)
             _hwnd = CreateWindowExW(0, "STATIC", "SonicMamboAsioHost", 0, 0, 0, 0, 0, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero);
 
-            var clsid = driver.Clsid;
-            var iid = driver.Clsid; // ASIO drivers use their own CLSID as IID (or IUnknown)
-            int hr = CoCreateInstance(ref clsid, IntPtr.Zero, CLSCTX_INPROC_SERVER, ref iid, out _iasio);
-            if (hr < 0 || _iasio == IntPtr.Zero)
+            int currentTargetBuffer = targetBufferSize;
+            bool restartAfterDriverReset;
+            do
             {
-                var iunk = new Guid("00000000-0000-0000-C000-000000000046");
-                hr = CoCreateInstance(ref clsid, IntPtr.Zero, CLSCTX_INPROC_SERVER, ref iunk, out _iasio);
-            }
+                restartAfterDriverReset = false;
 
-            if (hr < 0 || _iasio == IntPtr.Zero)
-            {
-                LastError = $"CoCreateInstance failed (0x{hr:X8}) for {driver.Name}.";
-                startedTcs.TrySetResult(false);
-                return;
-            }
+                var clsid = driver.Clsid;
+                var iid = driver.Clsid; // ASIO drivers use their own CLSID as IID (or IUnknown)
+                int hr = CoCreateInstance(ref clsid, IntPtr.Zero, CLSCTX_INPROC_SERVER, ref iid, out _iasio);
+                if (hr < 0 || _iasio == IntPtr.Zero)
+                {
+                    var iunk = new Guid("00000000-0000-0000-C000-000000000046");
+                    hr = CoCreateInstance(ref clsid, IntPtr.Zero, CLSCTX_INPROC_SERVER, ref iunk, out _iasio);
+                }
 
-            var vtbl = *(IntPtr**)_iasio;
-            var fnInit = (delegate* unmanaged[Stdcall]<IntPtr, IntPtr, int>)vtbl[3];
-            var fnGetError = (delegate* unmanaged[Stdcall]<IntPtr, byte*, void>)vtbl[6];
-            var fnStart = (delegate* unmanaged[Stdcall]<IntPtr, int>)vtbl[7];
-            var fnStop = (delegate* unmanaged[Stdcall]<IntPtr, int>)vtbl[8];
-            var fnGetChannels = (delegate* unmanaged[Stdcall]<IntPtr, int*, int*, int>)vtbl[9];
-            var fnGetLatencies = (delegate* unmanaged[Stdcall]<IntPtr, int*, int*, int>)vtbl[10];
-            var fnGetBufferSize = (delegate* unmanaged[Stdcall]<IntPtr, int*, int*, int*, int*, int>)vtbl[11];
-            var fnGetSampleRate = (delegate* unmanaged[Stdcall]<IntPtr, double*, int>)vtbl[13];
-            var fnSetSampleRate = (delegate* unmanaged[Stdcall]<IntPtr, double, int>)vtbl[14];
-            var fnGetChannelInfo = (delegate* unmanaged[Stdcall]<IntPtr, AsioChannelInfo*, int>)vtbl[18];
-            var fnCreateBuffers = (delegate* unmanaged[Stdcall]<IntPtr, AsioBufferInfo*, int, int, AsioCallbacks*, int>)vtbl[19];
-            var fnDisposeBuffers = (delegate* unmanaged[Stdcall]<IntPtr, int>)vtbl[20];
-            var fnOutputReady = (delegate* unmanaged[Stdcall]<IntPtr, int>)vtbl[23];
-            var fnRelease = (delegate* unmanaged[Stdcall]<IntPtr, uint>)vtbl[2];
+                if (hr < 0 || _iasio == IntPtr.Zero)
+                {
+                    LastError = $"CoCreateInstance failed (0x{hr:X8}) for {driver.Name}.";
+                    startedTcs.TrySetResult(false);
+                    return;
+                }
 
-            if (fnInit(_iasio, _hwnd) == 0)
-            {
-                byte* errBuf = stackalloc byte[128];
-                fnGetError(_iasio, errBuf);
-                var msg = Marshal.PtrToStringAnsi((IntPtr)errBuf) ?? "Hardware not connected or busy";
-                LastError = $"{driver.Name}: {msg}";
-                fnRelease(_iasio);
-                _iasio = IntPtr.Zero;
-                startedTcs.TrySetResult(false);
-                return;
-            }
+                var vtbl = *(IntPtr**)_iasio;
+                var fnInit = (delegate* unmanaged[Stdcall]<IntPtr, IntPtr, int>)vtbl[3];
+                var fnGetError = (delegate* unmanaged[Stdcall]<IntPtr, byte*, void>)vtbl[6];
+                var fnStart = (delegate* unmanaged[Stdcall]<IntPtr, int>)vtbl[7];
+                var fnStop = (delegate* unmanaged[Stdcall]<IntPtr, int>)vtbl[8];
+                var fnGetChannels = (delegate* unmanaged[Stdcall]<IntPtr, int*, int*, int>)vtbl[9];
+                var fnGetLatencies = (delegate* unmanaged[Stdcall]<IntPtr, int*, int*, int>)vtbl[10];
+                var fnGetBufferSize = (delegate* unmanaged[Stdcall]<IntPtr, int*, int*, int*, int*, int>)vtbl[11];
+                var fnGetSampleRate = (delegate* unmanaged[Stdcall]<IntPtr, double*, int>)vtbl[13];
+                var fnSetSampleRate = (delegate* unmanaged[Stdcall]<IntPtr, double, int>)vtbl[14];
+                var fnGetChannelInfo = (delegate* unmanaged[Stdcall]<IntPtr, AsioChannelInfo*, int>)vtbl[18];
+                var fnCreateBuffers = (delegate* unmanaged[Stdcall]<IntPtr, AsioBufferInfo*, int, int, AsioCallbacks*, int>)vtbl[19];
+                var fnDisposeBuffers = (delegate* unmanaged[Stdcall]<IntPtr, int>)vtbl[20];
+                var fnOutputReady = (delegate* unmanaged[Stdcall]<IntPtr, int>)vtbl[23];
+                var fnRelease = (delegate* unmanaged[Stdcall]<IntPtr, uint>)vtbl[2];
 
-            int inCh = 0, outCh = 0;
-            fnGetChannels(_iasio, &inCh, &outCh);
-            InputChannels = inCh;
-            OutputChannels = outCh;
+                if (fnInit(_iasio, _hwnd) == 0)
+                {
+                    byte* errBuf = stackalloc byte[128];
+                    fnGetError(_iasio, errBuf);
+                    var msg = Marshal.PtrToStringAnsi((IntPtr)errBuf) ?? "Hardware not connected or busy";
+                    LastError = $"{driver.Name}: {msg}";
+                    fnRelease(_iasio);
+                    _iasio = IntPtr.Zero;
+                    startedTcs.TrySetResult(false);
+                    return;
+                }
 
-            if (inCh < 1 || outCh < 1)
-            {
-                LastError = $"{driver.Name} reported {inCh} inputs and {outCh} outputs.";
-                fnRelease(_iasio);
-                _iasio = IntPtr.Zero;
-                startedTcs.TrySetResult(false);
-                return;
-            }
+                int inCh = 0, outCh = 0;
+                fnGetChannels(_iasio, &inCh, &outCh);
+                InputChannels = inCh;
+                OutputChannels = outCh;
 
-            double sr = 0;
-            fnGetSampleRate(_iasio, &sr);
-            if (sr < 44100 || sr > 192000)
-            {
-                fnSetSampleRate(_iasio, 48000.0);
+                if (inCh < 1 || outCh < 1)
+                {
+                    LastError = $"{driver.Name} reported {inCh} inputs and {outCh} outputs.";
+                    fnRelease(_iasio);
+                    _iasio = IntPtr.Zero;
+                    startedTcs.TrySetResult(false);
+                    return;
+                }
+
+                double sr = 0;
                 fnGetSampleRate(_iasio, &sr);
-            }
-            if (sr <= 0) sr = 48000.0;
-            SampleRate = sr;
+                if (sr < 44100 || sr > 192000)
+                {
+                    fnSetSampleRate(_iasio, 48000.0);
+                    fnGetSampleRate(_iasio, &sr);
+                }
+                if (sr <= 0) sr = 48000.0;
+                SampleRate = sr;
 
-            int minBuf = 0, maxBuf = 0, prefBuf = 0, gran = 0;
-            fnGetBufferSize(_iasio, &minBuf, &maxBuf, &prefBuf, &gran);
-            Console.WriteLine($"    [ASIO Buffer Caps] min={minBuf}, max={maxBuf}, preferred={prefBuf}, granularity={gran}");
-            int chosenBuf = PickOptimalLowLatencyBuffer(minBuf, maxBuf, prefBuf, gran, targetBufferSize);
-            BufferSize = chosenBuf;
+                int minBuf = 0, maxBuf = 0, prefBuf = 0, gran = 0;
+                fnGetBufferSize(_iasio, &minBuf, &maxBuf, &prefBuf, &gran);
+                Console.WriteLine($"    [ASIO Buffer Caps] min={minBuf}, max={maxBuf}, preferred={prefBuf}, granularity={gran}");
+                int chosenBuf = PickOptimalLowLatencyBuffer(minBuf, maxBuf, prefBuf, gran, currentTargetBuffer);
+                BufferSize = chosenBuf;
 
-            // Request up to 2 input channels (Ch 1 Mic + Ch 2 Guitar Inst) and 2 output channels (Stereo L/R)
-            _numInputBuffers = Math.Min(2, inCh);
-            _numOutputBuffers = Math.Min(2, outCh);
-            _totalCreatedBuffers = _numInputBuffers + _numOutputBuffers;
+                // Request up to 2 input channels (Ch 1 Mic + Ch 2 Guitar Inst) and 2 output channels (Stereo L/R)
+                _numInputBuffers = Math.Min(2, inCh);
+                _numOutputBuffers = Math.Min(2, outCh);
+                _totalCreatedBuffers = _numInputBuffers + _numOutputBuffers;
 
-            _bufferInfos = (AsioBufferInfo*)NativeMemory.AllocZeroed((nuint)_totalCreatedBuffers, (nuint)sizeof(AsioBufferInfo));
-            for (int c = 0; c < _numInputBuffers; c++)
-            {
-                _bufferInfos[c].IsInput = 1;
-                _bufferInfos[c].ChannelNum = c;
-            }
-            for (int c = 0; c < _numOutputBuffers; c++)
-            {
-                _bufferInfos[_numInputBuffers + c].IsInput = 0;
-                _bufferInfos[_numInputBuffers + c].ChannelNum = c;
-            }
+                _bufferInfos = (AsioBufferInfo*)NativeMemory.AllocZeroed((nuint)_totalCreatedBuffers, (nuint)sizeof(AsioBufferInfo));
+                for (int c = 0; c < _numInputBuffers; c++)
+                {
+                    _bufferInfos[c].IsInput = 1;
+                    _bufferInfos[c].ChannelNum = c;
+                }
+                for (int c = 0; c < _numOutputBuffers; c++)
+                {
+                    _bufferInfos[_numInputBuffers + c].IsInput = 0;
+                    _bufferInfos[_numInputBuffers + c].ChannelNum = c;
+                }
 
-            // Query sample formats for Input 0 and Output 0
-            AsioChannelInfo chInfo = default;
-            chInfo.Channel = 0;
-            chInfo.IsInput = 1;
-            if (fnGetChannelInfo(_iasio, &chInfo) == ASE_OK)
-            {
-                _inSampleType = chInfo.SampleType;
-            }
+                // Query sample formats for Input 0 and Output 0
+                AsioChannelInfo chInfo = default;
+                chInfo.Channel = 0;
+                chInfo.IsInput = 1;
+                if (fnGetChannelInfo(_iasio, &chInfo) == ASE_OK)
+                {
+                    _inSampleType = chInfo.SampleType;
+                }
 
-            AsioChannelInfo outInfo = default;
-            outInfo.Channel = 0;
-            outInfo.IsInput = 0;
-            if (fnGetChannelInfo(_iasio, &outInfo) == ASE_OK)
-            {
-                _outSampleType = outInfo.SampleType;
-            }
+                AsioChannelInfo outInfo = default;
+                outInfo.Channel = 0;
+                outInfo.IsInput = 0;
+                if (fnGetChannelInfo(_iasio, &outInfo) == ASE_OK)
+                {
+                    _outSampleType = outInfo.SampleType;
+                }
 
-            _callbacks = (AsioCallbacks*)NativeMemory.AllocZeroed(1, (nuint)sizeof(AsioCallbacks));
-            _callbacks->BufferSwitch = &OnBufferSwitch;
-            _callbacks->SampleRateDidChange = &OnSampleRateChanged;
-            _callbacks->AsioMessage = &OnAsioMessage;
-            _callbacks->BufferSwitchTimeInfo = &OnBufferSwitchTimeInfo;
+                _callbacks = (AsioCallbacks*)NativeMemory.AllocZeroed(1, (nuint)sizeof(AsioCallbacks));
+                _callbacks->BufferSwitch = &OnBufferSwitch;
+                _callbacks->SampleRateDidChange = &OnSampleRateChanged;
+                _callbacks->AsioMessage = &OnAsioMessage;
+                _callbacks->BufferSwitchTimeInfo = &OnBufferSwitchTimeInfo;
 
-            _audioCore.Configure(SampleRate, BufferSize);
-            s_active = this;
+                _audioCore.Configure(SampleRate, BufferSize);
+                s_active = this;
 
-            int cbErr = fnCreateBuffers(_iasio, _bufferInfos, _totalCreatedBuffers, chosenBuf, _callbacks);
-            if (cbErr != ASE_OK)
-            {
-                LastError = $"createBuffers failed ({cbErr}).";
+                int cbErr = fnCreateBuffers(_iasio, _bufferInfos, _totalCreatedBuffers, chosenBuf, _callbacks);
+                if (cbErr != ASE_OK)
+                {
+                    LastError = $"createBuffers failed ({cbErr}).";
+                    CleanupDriver(fnDisposeBuffers, fnStop, fnRelease);
+                    startedTcs.TrySetResult(false);
+                    return;
+                }
+
+                int latIn = 0, latOut = 0;
+                fnGetLatencies(_iasio, &latIn, &latOut);
+                InputLatencySamples = latIn > 0 ? latIn : chosenBuf;
+                OutputLatencySamples = latOut > 0 ? latOut : chosenBuf;
+
+                _supportsOutputReady = fnOutputReady(_iasio) == ASE_OK;
+
+                int startErr = fnStart(_iasio);
+                if (startErr != ASE_OK)
+                {
+                    LastError = $"ASIO start() failed ({startErr}).";
+                    CleanupDriver(fnDisposeBuffers, fnStop, fnRelease);
+                    startedTcs.TrySetResult(false);
+                    return;
+                }
+
+                DriverName = driver.Name;
+                LastError = null;
+                _running = true;
+                _resetRequested = false;
+                startedTcs.TrySetResult(true);
+
+                // Pump Win32 messages (required for ASIO Control Panel GUI & driver notifications) + commands
+                while (!_cmdQueue.IsExiting)
+                {
+                    while (PeekMessageW(out var msg, IntPtr.Zero, 0, 0, 1 /* PM_REMOVE */))
+                    {
+                        TranslateMessage(ref msg);
+                        DispatchMessageW(ref msg);
+                    }
+
+                    while (_cmdQueue.TryDequeue(out var action))
+                    {
+                        action();
+                    }
+
+                    if (_resetRequested)
+                    {
+                        // Driver changed buffer size in Control Panel -> re-init seamlessly with driver's new preferred buffer
+                        _resetRequested = false;
+                        currentTargetBuffer = 0;
+                        restartAfterDriverReset = true;
+                        break;
+                    }
+
+                    Thread.Sleep(15);
+                }
+
+                _running = false;
                 CleanupDriver(fnDisposeBuffers, fnStop, fnRelease);
-                startedTcs.TrySetResult(false);
-                return;
-            }
-
-            int latIn = 0, latOut = 0;
-            fnGetLatencies(_iasio, &latIn, &latOut);
-            InputLatencySamples = latIn > 0 ? latIn : chosenBuf;
-            OutputLatencySamples = latOut > 0 ? latOut : chosenBuf;
-
-            _supportsOutputReady = fnOutputReady(_iasio) == ASE_OK;
-
-            int startErr = fnStart(_iasio);
-            if (startErr != ASE_OK)
-            {
-                LastError = $"ASIO start() failed ({startErr}).";
-                CleanupDriver(fnDisposeBuffers, fnStop, fnRelease);
-                startedTcs.TrySetResult(false);
-                return;
-            }
-
-            DriverName = driver.Name;
-            LastError = null;
-            _running = true;
-            _resetRequested = false;
-            startedTcs.TrySetResult(true);
-
-            // Pump Win32 messages (required for ASIO Control Panel GUI & driver notifications) + commands
-            while (!_cmdQueue.IsExiting)
-            {
-                while (PeekMessageW(out var msg, IntPtr.Zero, 0, 0, 1 /* PM_REMOVE */))
-                {
-                    TranslateMessage(ref msg);
-                    DispatchMessageW(ref msg);
-                }
-
-                while (_cmdQueue.TryDequeue(out var action))
-                {
-                    action();
-                }
-
-                if (_resetRequested)
-                {
-                    // Driver changed buffer size in Control Panel -> notify caller
-                    _resetRequested = false;
-                    break;
-                }
-
-                Thread.Sleep(15);
-            }
-
-            _running = false;
-            CleanupDriver(fnDisposeBuffers, fnStop, fnRelease);
+            } while (restartAfterDriverReset && !_cmdQueue.IsExiting);
         }
         catch (Exception ex)
         {
@@ -397,9 +407,13 @@ public sealed unsafe class AsioHost : IDisposable
 
     private static int PickOptimalLowLatencyBuffer(int minBuf, int maxBuf, int prefBuf, int gran, int targetSamples)
     {
+        if (targetSamples <= 0)
+        {
+            return prefBuf > 0 ? prefBuf : 64;
+        }
         if (minBuf <= 0 || maxBuf <= 0 || minBuf >= maxBuf)
         {
-            return prefBuf > 0 ? prefBuf : 128;
+            return prefBuf > 0 ? prefBuf : 64;
         }
         int clamped = Math.Clamp(targetSamples, minBuf, maxBuf);
         if (gran == -1)
@@ -671,5 +685,14 @@ public sealed unsafe class AsioHost : IDisposable
         }
 
         public void SignalExit() => _exiting = true;
+
+        public void Reset()
+        {
+            lock (_q)
+            {
+                _q.Clear();
+                _exiting = false;
+            }
+        }
     }
 }

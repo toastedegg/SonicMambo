@@ -56,12 +56,20 @@ public sealed unsafe class RealTimeAudioCore : IDisposable
     private readonly float* _roomDelayR;
     private int _roomIdx = 0;
 
-    // Amp DSP state
+    // Amp DSP state (Cascaded 3-stage 12AX7 tube preamp + 4x12" speaker cab + Haas room)
+    private float _gateEnv = 0;
     private float _hpPrevIn = 0;
     private float _hpPrevOut = 0;
-    private float _z11 = 0, _z12 = 0;
-    private float _z21 = 0, _z22 = 0;
+    private float _interLp = 0;
+    private float _interHpIn = 0;
+    private float _interHpOut = 0;
+    private float _z01 = 0, _z02 = 0; // 4x12 116Hz speaker cabinet thump biquad
+    private float _z11 = 0, _z12 = 0; // Interactive Tone/Bite presence biquad
+    private float _z21 = 0, _z22 = 0; // Cabinet 12" cone lowpass stage 1
+    private float _z31 = 0, _z32 = 0; // Cabinet 12" cone lowpass stage 2 (24dB/oct anti-fizz!)
     private float _lpRoomL = 0, _lpRoomR = 0;
+    private float _smoothStage1 = 8.0f;
+    private float _smoothMaster = 0.85f;
 
     // Atomic amp parameters
     private volatile bool _ampEnabled = false;
@@ -70,9 +78,17 @@ public sealed unsafe class RealTimeAudioCore : IDisposable
     private volatile int _activeChannel = 0;
     private volatile float _masterMixVol = 0.78f;
 
+    private float _gateFloor = 0.0004f;
+    private float _gateInvSpan = 600f;
     private float _hpCoeff = 0.988f;
-    private float _driveGain = 2.8f;
+    private float _interLpCoeff = 0.48f;
+    private float _interHpCoeff = 0.994f;
+    private int _tubeStages = 2;
+    private float _stage1Gain = 18.0f;
+    private float _stage2Gain = 2.4f;
+    private float _stage3Gain = 1.4f;
     private float _postMakeup = 0.65f;
+    private float _b00 = 1, _b01 = 0, _b02 = 0, _a01 = 0, _a02 = 0;
     private float _b10 = 1, _b11 = 0, _b12 = 0, _a11 = 0, _a12 = 0;
     private float _b20 = 1, _b21 = 0, _b22 = 0, _a21 = 0, _a22 = 0;
     private float _roomWet = 0.14f;
@@ -124,20 +140,20 @@ public sealed unsafe class RealTimeAudioCore : IDisposable
         _eventQueue = (ScheduledVoiceEvent*)NativeMemory.AllocZeroed(EventQueueSize, (nuint)sizeof(ScheduledVoiceEvent));
         _voices = (ActiveVoice*)NativeMemory.AllocZeroed(MaxVoices, (nuint)sizeof(ActiveVoice));
 
-        UpdateAmpParameters(false, "blues-breakup", 0.45f, 0.28f, 0.70f);
+        UpdateAmpParameters(false, "british-crunch", 0.68f, 0.24f, 0.78f, 0.64f);
     }
 
     public void Configure(double sampleRate, int _bufferSize)
     {
         _sampleRate = sampleRate > 8000 ? sampleRate : 48000.0;
-        _hpCoeff = MathF.Exp((float)(-2.0 * Math.PI * 85.0 / _sampleRate));
-        UpdateAmpParameters(_ampEnabled, _lastPreset, _lastDrive, _lastReverb, _lastVol);
+        UpdateAmpParameters(_ampEnabled, _lastPreset, _lastDrive, _lastReverb, _lastVol, _lastTone);
     }
 
-    private string _lastPreset = "blues-breakup";
-    private float _lastDrive = 0.45f;
-    private float _lastReverb = 0.28f;
-    private float _lastVol = 0.70f;
+    private string _lastPreset = "british-crunch";
+    private float _lastDrive = 0.68f;
+    private float _lastReverb = 0.24f;
+    private float _lastVol = 0.78f;
+    private float _lastTone = 0.64f;
 
     public void SetChannelMode(string mode)
     {
@@ -172,46 +188,134 @@ public sealed unsafe class RealTimeAudioCore : IDisposable
         _evWrite = next;
     }
 
-    public void UpdateAmpParameters(bool enabled, string preset, float drive, float reverb, float volume)
+    public void UpdateAmpParameters(bool enabled, string preset, float drive, float reverb, float volume, float tone = 0.62f)
     {
         _lastPreset = preset;
-        _lastDrive = Math.Clamp(drive, 0f, 1f);
+        float d = Math.Clamp(drive, 0f, 1f);
+        float t = Math.Clamp(tone, 0f, 1f);
+        _lastDrive = d;
         _lastReverb = Math.Clamp(reverb, 0f, 1f);
         _lastVol = Math.Clamp(volume, 0f, 1f);
+        _lastTone = t;
 
-        float midFreq = 1650f;
-        float midDb = 2.0f;
-        float cabLpHz = 4200f;
-        float driveBias = _lastDrive;
+        // Exponential perceptual pot taper so 50% already bites hard and 85-100% goes full molten!
+        float dCurve = d * d * 0.65f + d * 0.35f;
+
+        float preHpHz = 120f;
+        float thumpDb = 3.2f;
+        float midFreq = 1100f + t * 1150f;
+        float midDb = 1.5f + t * 5.5f;
+        float cabLpHz = 3400f + t * 1500f;
+        int stages = 2;
+        float g1 = 10f, g2 = 2.0f, g3 = 1.0f;
+        float makeup = 0.62f;
+        float gateFloor = 0.00025f;
+        float gateSpan = 0.0014f;
 
         switch (preset)
         {
             case "clean-studio":
-                midFreq = 2100f; midDb = 1.8f; cabLpHz = 4900f; driveBias = _lastDrive * 0.42f;
+                preHpHz = 75f;
+                thumpDb = 2.2f;
+                midFreq = 1400f + t * 1300f;
+                midDb = -0.5f + t * 4.2f;
+                cabLpHz = 4200f + t * 1600f;
+                stages = 1;
+                g1 = 3.5f + dCurve * 14.5f;
+                g2 = 1.0f;
+                g3 = 1.0f;
+                makeup = 0.72f / (1f + dCurve * 0.32f);
+                gateFloor = 0.0001f;
+                gateSpan = 0.0006f;
                 break;
-            case "blues-breakup":
-                midFreq = 980f; midDb = 4.2f; cabLpHz = 4100f; driveBias = 0.16f + _lastDrive * 0.68f;
-                break;
-            case "british-crunch":
-                midFreq = 1250f; midDb = 5.8f; cabLpHz = 3650f; driveBias = 0.35f + _lastDrive * 0.65f;
-                break;
+
             case "velvet-jazz":
-                midFreq = 420f; midDb = 2.4f; cabLpHz = 2700f; driveBias = _lastDrive * 0.22f;
+                preHpHz = 70f;
+                thumpDb = 2.8f;
+                midFreq = 520f + t * 700f;
+                midDb = 1.2f + t * 3.0f;
+                cabLpHz = 2500f + t * 1100f;
+                stages = 1;
+                g1 = 3.0f + dCurve * 9.0f;
+                makeup = 0.74f / (1f + dCurve * 0.25f);
+                gateFloor = 0.0001f;
+                gateSpan = 0.0006f;
+                break;
+
+            case "blues-breakup":
+                // Hot Tube Screamer -> pushed Fender/Marshall breakup (+20dB .. +45dB)
+                preHpHz = 135f;
+                thumpDb = 3.6f;
+                midFreq = 880f + t * 1100f;
+                midDb = 2.4f + t * 5.8f;
+                cabLpHz = 3400f + t * 1450f;
+                stages = 2;
+                g1 = 7.5f + dCurve * 38.0f;
+                g2 = 1.45f + dCurve * 3.8f;
+                g3 = 1.0f;
+                makeup = 0.62f / (1f + dCurve * 0.22f);
+                gateFloor = 0.0003f;
+                gateSpan = 0.0014f;
+                break;
+
+            case "british-crunch":
+                // Hot-rodded JCM800 3-stage 12AX7 roar (+34dB .. +63dB)
+                preHpHz = 215f;
+                thumpDb = 4.8f;
+                midFreq = 1050f + t * 1250f;
+                midDb = 3.2f + t * 6.4f;
+                cabLpHz = 3300f + t * 1350f;
+                stages = 3;
+                g1 = 16.0f + dCurve * 72.0f;
+                g2 = 2.3f + dCurve * 6.2f;
+                g3 = 1.5f + dCurve * 2.6f;
+                makeup = 0.56f / (1f + dCurve * 0.16f);
+                gateFloor = 0.00055f;
+                gateSpan = 0.0020f;
+                break;
+
+            case "insane-lead":
+            default:
+                // NITRO 5150 / Dual-Rectifier / Shred Lead (+48dB .. +76dB cascaded saturation!)
+                preHpHz = 310f;
+                thumpDb = 5.8f;
+                midFreq = 1180f + t * 1380f;
+                midDb = 3.8f + t * 7.2f;
+                cabLpHz = 3250f + t * 1300f;
+                stages = 3;
+                g1 = 36.0f + dCurve * 145.0f;
+                g2 = 3.6f + dCurve * 8.8f;
+                g3 = 2.2f + dCurve * 4.2f;
+                makeup = 0.54f / (1f + dCurve * 0.12f);
+                gateFloor = 0.00085f;
+                gateSpan = 0.0026f;
                 break;
         }
 
         float sr = (float)_sampleRate;
-        ComputePeakingBiquad(midFreq, 0.95f, midDb, sr, out float b10, out float b11, out float b12, out float a11, out float a12);
-        ComputeLowpassBiquad(cabLpHz, 0.85f, sr, out float b20, out float b21, out float b22, out float a21, out float a22);
+        // Closed-back 4x12" speaker resonant low-end chest thump at 116 Hz
+        ComputePeakingBiquad(116f, 1.30f, thumpDb, sr, out float b00, out float b01, out float b02, out float a01, out float a02);
+        // Interactive Tone/Bite mid-presence shaping
+        ComputePeakingBiquad(midFreq, 0.90f, midDb, sr, out float b10, out float b11, out float b12, out float a11, out float a12);
+        // 4th-order (2x cascaded 12dB/oct = 24dB/oct) Celestion V30 speaker cone roll-off (zero digital fizz!)
+        ComputeLowpassBiquad(cabLpHz, 0.78f, sr, out float b20, out float b21, out float b22, out float a21, out float a22);
 
-        _hpCoeff = MathF.Exp(-2f * MathF.PI * 85f / sr);
-        _driveGain = 1.15f + driveBias * 5.6f;
-        _postMakeup = 1.0f / (1.0f + driveBias * 0.85f);
+        _hpCoeff = MathF.Exp(-2f * MathF.PI * preHpHz / sr);
+        _interLpCoeff = 1f - MathF.Exp(-2f * MathF.PI * 5400f / sr);
+        _interHpCoeff = MathF.Exp(-2f * MathF.PI * 48f / sr);
+        _gateFloor = gateFloor;
+        _gateInvSpan = 1f / Math.Max(0.0002f, gateSpan);
+        _tubeStages = stages;
+        _stage1Gain = g1;
+        _stage2Gain = g2;
+        _stage3Gain = g3;
+        _postMakeup = makeup;
+        _b00 = b00; _b01 = b01; _b02 = b02; _a01 = a01; _a02 = a02;
         _b10 = b10; _b11 = b11; _b12 = b12; _a11 = a11; _a12 = a12;
         _b20 = b20; _b21 = b21; _b22 = b22; _a21 = a21; _a22 = a22;
-        _roomWet = _lastReverb * 0.45f;
-        _roomFb = 0.18f + _lastReverb * 0.26f;
-        _ampMaster = _lastVol * 1.4f;
+        _roomWet = _lastReverb * 0.42f;
+        _roomFb = 0.16f + _lastReverb * 0.25f;
+        _ampMaster = _lastVol * 1.55f;
         _ampEnabled = enabled;
     }
 
@@ -282,40 +386,97 @@ public sealed unsafe class RealTimeAudioCore : IDisposable
         Thread.MemoryBarrier();
         _dryWritePos = (dryW + frames) & DryRingMask;
 
-        // 3. Inline Guitar Amplifier + Cabinet + Stereo Room (only when enabled & not gated)
+        // 3. Inline Cascaded 3-Stage 12AX7 Tube Preamp + 4x12" Cabinet + Haas Room
         bool runAmp = _ampEnabled && !gated;
         if (runAmp)
         {
-            float hpIn = _hpPrevIn, hpOut = _hpPrevOut;
-            float hpC = _hpCoeff, drv = _driveGain, mk = _postMakeup;
+            float gateEnv = _gateEnv;
+            float gateFloor = _gateFloor, gateInvSpan = _gateInvSpan;
+            float hpIn = _hpPrevIn, hpOut = _hpPrevOut, hpC = _hpCoeff;
+            float interLp = _interLp, interLpC = _interLpCoeff;
+            float interHpIn = _interHpIn, interHpOut = _interHpOut, interHpC = _interHpCoeff;
+            int stages = _tubeStages;
+            float targetG1 = _stage1Gain, g2 = _stage2Gain, g3 = _stage3Gain, mk = _postMakeup;
+            float smoothG1 = _smoothStage1;
+            float b00 = _b00, b01 = _b01, b02 = _b02, a01 = _a01, a02 = _a02;
             float b10 = _b10, b11 = _b11, b12 = _b12, a11 = _a11, a12 = _a12;
             float b20 = _b20, b21 = _b21, b22 = _b22, a21 = _a21, a22 = _a22;
-            float z11 = _z11, z12 = _z12, z21 = _z21, z22 = _z22;
+            float z01 = _z01, z02 = _z02;
+            float z11 = _z11, z12 = _z12;
+            float z21 = _z21, z22 = _z22;
+            float z31 = _z31, z32 = _z32;
             float lpL = _lpRoomL, lpR = _lpRoomR;
-            float wet = _roomWet, fb = _roomFb, master = _ampMaster;
+            float wet = _roomWet, fb = _roomFb;
+            float targetMaster = _ampMaster, smoothMaster = _smoothMaster;
             int rIdx = _roomIdx;
-            int delaySamplesL = (int)(0.024 * _sampleRate);
-            int delaySamplesR = (int)(0.036 * _sampleRate);
+            int delaySamplesL = (int)(0.011 * _sampleRate);
+            int delaySamplesR = (int)(0.017 * _sampleRate);
 
             for (int i = 0; i < frames; i++)
             {
-                float x = mode == 0 ? in0[i] : mode == 1 ? in1[i] : (in0[i] + in1[i]);
+                float x = mode == 0
+                    ? in0[i]
+                    : mode == 1
+                        ? in1[i]
+                        : mode == -2
+                            ? (in0[i] + in1[i]) * 0.70710678f
+                            : (chosenCh == 1 ? in1[i] : in0[i]);
+
+                // Zipper-free parameter smoothing when turning knobs live
+                smoothG1 += 0.008f * (targetG1 - smoothG1);
+                smoothMaster += 0.008f * (targetMaster - smoothMaster);
+
+                // Fast-attack / smooth-release studio noise gate (dead-silent high-gain stops!)
+                float ax = MathF.Abs(x);
+                gateEnv += (ax > gateEnv ? 0.16f : 0.00065f) * (ax - gateEnv);
+                float gateGain = Math.Clamp((gateEnv - gateFloor) * gateInvSpan, 0f, 1f);
+                gateGain *= gateGain;
+                x *= gateGain;
+
+                // Pre-drive bass-tightening high-pass (TS9 / Horizon tight chug filter)
                 hpOut = x - hpIn + hpC * hpOut;
                 hpIn = x;
 
-                float u = hpOut * drv;
-                if (u < 0f) u *= 0.82f;
-                u = Math.Clamp(u, -3.0f, 3.0f);
-                float u2 = u * u;
-                float sat = (u * (27f + u2)) / (27f + 9f * u2) * mk;
+                // Tube Stage 1: Warm asymmetric 12AX7 input triode
+                float s = SoftTubeStage(hpOut * smoothG1, 0.84f);
 
-                float y1 = b10 * sat + z11;
-                z11 = b11 * sat - a11 * y1 + z12;
-                z12 = b12 * sat - a12 * y1;
+                if (stages >= 2)
+                {
+                    // Interstage plate-load RC damper + coupling capacitor (prevents fizz & DC blocking)
+                    interLp += interLpC * (s - interLp);
+                    interHpOut = interLp - interHpIn + interHpC * interHpOut;
+                    interHpIn = interLp;
 
-                float cab = b20 * y1 + z21;
-                z21 = b21 * y1 - a21 * cab + z22;
-                z22 = b22 * y1 - a22 * cab;
+                    // Tube Stage 2: Cold-clipper cathode-biased crunch stage (JCM800 / 5150 harmonic bite)
+                    s = SoftTubeStage(interHpOut * g2, 0.68f);
+
+                    if (stages >= 3)
+                    {
+                        // Tube Stage 3: Saturated EL34 / 6L6 power-amp compression & sustain
+                        s = SoftTubeStage(s * g3, 0.92f);
+                    }
+                }
+
+                float sat = s * mk;
+
+                // Biquad 0: 4x12" Closed-back speaker cabinet 116 Hz chest thump
+                float y0 = b00 * sat + z01;
+                z01 = b01 * sat - a01 * y0 + z02;
+                z02 = b02 * sat - a02 * y0;
+
+                // Biquad 1: Interactive Tone/Bite upper-mid & presence voicing
+                float y1 = b10 * y0 + z11;
+                z11 = b11 * y0 - a11 * y1 + z12;
+                z12 = b12 * y0 - a12 * y1;
+
+                // Biquads 2 & 3: 4th-order (24 dB/oct) Celestion speaker cone roll-off
+                float cab1 = b20 * y1 + z21;
+                z21 = b21 * y1 - a21 * cab1 + z22;
+                z22 = b22 * y1 - a22 * cab1;
+
+                float cab = b20 * cab1 + z31;
+                z31 = b21 * cab1 - a21 * cab + z32;
+                z32 = b22 * cab1 - a22 * cab;
 
                 float tapL = _roomDelayL[(rIdx - delaySamplesL) & DelayMask];
                 float tapR = _roomDelayR[(rIdx - delaySamplesR) & DelayMask];
@@ -326,12 +487,19 @@ public sealed unsafe class RealTimeAudioCore : IDisposable
                 _roomDelayR[rIdx] = cab + lpL * fb;
                 rIdx = (rIdx + 1) & DelayMask;
 
-                outL[i] = (cab + lpL * wet) * master;
-                outR[i] = (cab + lpR * wet) * master;
+                // Soft safety output ceiling so 100% Gain + 100% Master hits loud without harsh digital clipping
+                outL[i] = SoftMasterLimit((cab + lpL * wet) * smoothMaster);
+                outR[i] = SoftMasterLimit((cab + lpR * wet) * smoothMaster);
             }
 
+            _gateEnv = gateEnv;
             _hpPrevIn = hpIn; _hpPrevOut = hpOut;
-            _z11 = z11; _z12 = z12; _z21 = z21; _z22 = z22;
+            _interLp = interLp; _interHpIn = interHpIn; _interHpOut = interHpOut;
+            _smoothStage1 = smoothG1; _smoothMaster = smoothMaster;
+            _z01 = z01; _z02 = z02;
+            _z11 = z11; _z12 = z12;
+            _z21 = z21; _z22 = z22;
+            _z31 = z31; _z32 = z32;
             _lpRoomL = lpL; _lpRoomR = lpR; _roomIdx = rIdx;
         }
         else
@@ -508,6 +676,25 @@ public sealed unsafe class RealTimeAudioCore : IDisposable
             outL[i] += scaled;
             outR[i] += scaled;
         }
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static float SoftTubeStage(float u, float negAsymmetry)
+    {
+        if (u < 0f) u *= negAsymmetry;
+        if (u >= 3.0f) return 1.0f;
+        if (u <= -3.0f) return -1.0f;
+        float u2 = u * u;
+        return (u * (27f + u2)) / (27f + 9f * u2);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static float SoftMasterLimit(float x)
+    {
+        if (x >= 2.8f) return 0.96f;
+        if (x <= -2.8f) return -0.96f;
+        float x2 = x * x;
+        return 0.96f * (x * (27f + x2)) / (27f + 9f * x2);
     }
 
     private static void ComputePeakingBiquad(

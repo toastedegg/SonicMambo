@@ -399,7 +399,7 @@ export function Setup({ onReachedScrollEnd }: SetupProps) {
             </button>
           </div>
 
-          <div className="grid gap-3 sm:grid-cols-4">
+          <div className="grid gap-3 sm:grid-cols-5">
             {AMP_PRESETS.map((p) => {
               const active = ampSettings.preset === p.id;
               return (
@@ -408,8 +408,10 @@ export function Setup({ onReachedScrollEnd }: SetupProps) {
                   type="button"
                   onClick={() =>
                     void updateAmpSettings({
+                      enabled: true,
                       preset: p.id as AmpPresetId,
                       drive: p.defaultDrive,
+                      tone: p.defaultTone,
                       reverb: p.defaultReverb,
                     })
                   }
@@ -420,15 +422,16 @@ export function Setup({ onReachedScrollEnd }: SetupProps) {
                   }`}
                 >
                   <div className="text-xs font-bold">{p.label}</div>
+                  <div className="text-[10px] opacity-70 mt-0.5">{p.tag}</div>
                 </button>
               );
             })}
           </div>
 
-          <div className="grid gap-4 sm:grid-cols-3 pt-1 text-xs">
+          <div className="grid gap-4 sm:grid-cols-4 pt-1 text-xs">
             <label className="space-y-1">
               <div className="flex justify-between text-sp-text-muted font-semibold">
-                <span>Tube Drive</span>
+                <span>Tube Gain</span>
                 <span>{Math.round(ampSettings.drive * 100)}%</span>
               </div>
               <input
@@ -438,6 +441,23 @@ export function Setup({ onReachedScrollEnd }: SetupProps) {
                 value={Math.round(ampSettings.drive * 100)}
                 onChange={(e) =>
                   void updateAmpSettings({ drive: Number(e.target.value) / 100 })
+                }
+                className="w-full accent-amber-400 cursor-pointer"
+              />
+            </label>
+
+            <label className="space-y-1">
+              <div className="flex justify-between text-sp-text-muted font-semibold">
+                <span>Mid Bite / Tone</span>
+                <span>{Math.round((ampSettings.tone ?? 0.66) * 100)}%</span>
+              </div>
+              <input
+                type="range"
+                min={0}
+                max={100}
+                value={Math.round((ampSettings.tone ?? 0.66) * 100)}
+                onChange={(e) =>
+                  void updateAmpSettings({ tone: Number(e.target.value) / 100 })
                 }
                 className="w-full accent-amber-400 cursor-pointer"
               />

@@ -4,99 +4,116 @@ import {
   getGuitarAmpWasmBinary,
 } from './wasmAmpBinary';
 
-export type AmpPresetId = 'clean-studio' | 'blues-breakup' | 'british-crunch' | 'velvet-jazz';
+export type AmpPresetId =
+  | 'clean-studio'
+  | 'blues-breakup'
+  | 'british-crunch'
+  | 'insane-lead'
+  | 'velvet-jazz';
 
 export interface AmpSettings {
   enabled: boolean;
   preset: AmpPresetId;
   drive: number; // 0..1
-  reverb: number; // 0..1
-  volume: number; // 0..1
+  tone: number; // 0..1 (Bite / Mid-Presence)
+  reverb: number; // 0..1 (Cabinet Room Air)
+  volume: number; // 0..1 (Master Output Level)
 }
 
 export const AMP_PRESETS: ReadonlyArray<{
   id: AmpPresetId;
   label: string;
   shortLabel: string;
+  tag: string;
   defaultDrive: number;
+  defaultTone: number;
   defaultReverb: number;
 }> = [
   {
     id: 'clean-studio',
-    label: 'Clean Twin',
+    label: 'Twin Clean',
     shortLabel: 'Clean',
-    defaultDrive: 0.18,
-    defaultReverb: 0.28,
+    tag: '6L6 CHIME',
+    defaultDrive: 0.24,
+    defaultTone: 0.58,
+    defaultReverb: 0.34,
   },
   {
     id: 'blues-breakup',
-    label: 'Blues Tube',
-    shortLabel: 'Blues',
-    defaultDrive: 0.48,
-    defaultReverb: 0.32,
+    label: 'Texas Screamer',
+    shortLabel: 'Texas OD',
+    tag: 'TS9 OVERDRIVE',
+    defaultDrive: 0.62,
+    defaultTone: 0.62,
+    defaultReverb: 0.30,
   },
   {
     id: 'british-crunch',
-    label: 'Rock Crunch',
-    shortLabel: 'Crunch',
-    defaultDrive: 0.76,
-    defaultReverb: 0.22,
+    label: 'Plexi JCM800',
+    shortLabel: 'JCM Crunch',
+    tag: 'EL34 ROAR',
+    defaultDrive: 0.78,
+    defaultTone: 0.68,
+    defaultReverb: 0.24,
+  },
+  {
+    id: 'insane-lead',
+    label: 'Nitro 5150',
+    shortLabel: 'Nitro 5150',
+    tag: 'HIGH-GAIN SHRED',
+    defaultDrive: 0.88,
+    defaultTone: 0.74,
+    defaultReverb: 0.20,
   },
   {
     id: 'velvet-jazz',
-    label: 'Velvet Warm',
+    label: 'Velvet Jazz',
     shortLabel: 'Warm',
-    defaultDrive: 0.12,
-    defaultReverb: 0.35,
+    tag: 'DARK ARCHTOP',
+    defaultDrive: 0.14,
+    defaultTone: 0.36,
+    defaultReverb: 0.36,
   },
 ];
 
-const AMP_STORAGE_KEY = 'sonicmambo:ampSettings:v1';
+const AMP_STORAGE_KEY = 'sonicmambo:ampSettings:v2';
 
 export function readSavedAmpSettings(): AmpSettings {
+  const defaults: AmpSettings = {
+    enabled: false,
+    preset: 'british-crunch',
+    drive: 0.74,
+    tone: 0.66,
+    reverb: 0.24,
+    volume: 0.80,
+  };
   try {
     if (typeof window === 'undefined' || !window.localStorage) {
-      return {
-        enabled: false,
-        preset: 'blues-breakup',
-        drive: 0.45,
-        reverb: 0.28,
-        volume: 0.7,
-      };
+      return defaults;
     }
     const raw = window.localStorage.getItem(AMP_STORAGE_KEY);
     if (!raw) {
-      return {
-        enabled: false,
-        preset: 'blues-breakup',
-        drive: 0.45,
-        reverb: 0.28,
-        volume: 0.7,
-      };
+      return defaults;
     }
     const parsed = JSON.parse(raw) as Partial<AmpSettings>;
     const preset: AmpPresetId =
       parsed.preset === 'clean-studio' ||
       parsed.preset === 'blues-breakup' ||
       parsed.preset === 'british-crunch' ||
+      parsed.preset === 'insane-lead' ||
       parsed.preset === 'velvet-jazz'
         ? parsed.preset
-        : 'blues-breakup';
+        : defaults.preset;
     return {
       enabled: false,
       preset,
-      drive: typeof parsed.drive === 'number' ? Math.max(0, Math.min(1, parsed.drive)) : 0.45,
-      reverb: typeof parsed.reverb === 'number' ? Math.max(0, Math.min(1, parsed.reverb)) : 0.28,
-      volume: typeof parsed.volume === 'number' ? Math.max(0, Math.min(1, parsed.volume)) : 0.7,
+      drive: typeof parsed.drive === 'number' ? Math.max(0, Math.min(1, parsed.drive)) : defaults.drive,
+      tone: typeof parsed.tone === 'number' ? Math.max(0, Math.min(1, parsed.tone)) : defaults.tone,
+      reverb: typeof parsed.reverb === 'number' ? Math.max(0, Math.min(1, parsed.reverb)) : defaults.reverb,
+      volume: typeof parsed.volume === 'number' ? Math.max(0, Math.min(1, parsed.volume)) : defaults.volume,
     };
   } catch {
-    return {
-      enabled: false,
-      preset: 'blues-breakup',
-      drive: 0.45,
-      reverb: 0.28,
-      volume: 0.7,
-    };
+    return defaults;
   }
 }
 
@@ -117,48 +134,67 @@ export function buildWasmAmpParams(
 ): Float32Array {
   const ch0W = channelRouting === 1 ? 0.0 : 1.0;
   const ch1W = channelRouting === 0 ? 0.0 : 1.0;
-  const hpCoeff = Math.exp((-2 * Math.PI * 85) / Math.max(8000, sampleRate));
+  const d = Math.max(0, Math.min(1, settings.drive));
+  const t = Math.max(0, Math.min(1, settings.tone ?? 0.64));
+  const dCurve = d * d * 0.65 + d * 0.35;
 
-  let midFreq = 1650;
-  let midDb = 2.0;
-  let cabLpHz = 4200;
-  let driveBias = settings.drive;
+  let hpHz = 120;
+  let midFreq = 1100 + t * 1200;
+  let midDb = 2.0 + t * 5.5;
+  let cabLpHz = 3400 + t * 1400;
+  let driveGain = 14.0;
+  let makeup = 0.62;
 
   switch (settings.preset) {
     case 'clean-studio':
-      midFreq = 2100;
-      midDb = 1.8;
-      cabLpHz = 4900;
-      driveBias = settings.drive * 0.42;
-      break;
-    case 'blues-breakup':
-      midFreq = 980;
-      midDb = 4.2;
-      cabLpHz = 4100;
-      driveBias = 0.16 + settings.drive * 0.68;
-      break;
-    case 'british-crunch':
-      midFreq = 1250;
-      midDb = 5.8;
-      cabLpHz = 3650;
-      driveBias = 0.35 + settings.drive * 0.65;
+      hpHz = 75;
+      midFreq = 1400 + t * 1300;
+      midDb = 0.5 + t * 3.8;
+      cabLpHz = 4200 + t * 1500;
+      driveGain = 3.5 + dCurve * 12.0;
+      makeup = 0.72 / (1.0 + dCurve * 0.3);
       break;
     case 'velvet-jazz':
-      midFreq = 420;
-      midDb = 2.4;
-      cabLpHz = 2700;
-      driveBias = settings.drive * 0.22;
+      hpHz = 70;
+      midFreq = 500 + t * 700;
+      midDb = 1.4 + t * 2.8;
+      cabLpHz = 2500 + t * 1000;
+      driveGain = 3.0 + dCurve * 8.0;
+      makeup = 0.75 / (1.0 + dCurve * 0.22);
+      break;
+    case 'blues-breakup':
+      hpHz = 135;
+      midFreq = 900 + t * 1100;
+      midDb = 2.8 + t * 5.4;
+      cabLpHz = 3400 + t * 1400;
+      driveGain = 9.0 + dCurve * 46.0;
+      makeup = 0.62 / (1.0 + dCurve * 0.2);
+      break;
+    case 'british-crunch':
+      hpHz = 210;
+      midFreq = 1080 + t * 1250;
+      midDb = 3.8 + t * 6.2;
+      cabLpHz = 3300 + t * 1300;
+      driveGain = 22.0 + dCurve * 95.0;
+      makeup = 0.56 / (1.0 + dCurve * 0.16);
+      break;
+    case 'insane-lead':
+      hpHz = 290;
+      midFreq = 1200 + t * 1350;
+      midDb = 4.5 + t * 7.5;
+      cabLpHz = 3200 + t * 1250;
+      driveGain = 48.0 + dCurve * 190.0;
+      makeup = 0.52 / (1.0 + dCurve * 0.12);
       break;
   }
 
-  const driveGain = 1.15 + driveBias * 5.6;
-  const makeup = 1.0 / (1.0 + driveBias * 0.85);
-  const bq1 = computePeakingBiquad(midFreq, 0.95, midDb, sampleRate);
-  const bq2 = computeLowpassBiquad(cabLpHz, 0.85, sampleRate);
+  const hpCoeff = Math.exp((-2 * Math.PI * hpHz) / Math.max(8000, sampleRate));
+  const bq1 = computePeakingBiquad(midFreq, 0.92, midDb, sampleRate);
+  const bq2 = computeLowpassBiquad(cabLpHz, 0.82, sampleRate);
 
-  const roomWet = settings.reverb * 0.45;
-  const roomFb = 0.18 + settings.reverb * 0.26;
-  const master = settings.enabled ? settings.volume * 1.4 : 0.0;
+  const roomWet = settings.reverb * 0.42;
+  const roomFb = 0.16 + settings.reverb * 0.25;
+  const master = settings.enabled ? settings.volume * 1.5 : 0.0;
 
   return new Float32Array([
     ch0W,

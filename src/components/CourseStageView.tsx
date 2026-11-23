@@ -6,8 +6,9 @@ import {
   type GrooveStyleId,
   type GuideGuitarLevel,
 } from '../audio/backingTrackEngine';
-import { AMP_PRESETS, type AmpPresetId } from '../audio/guitarAmpRig';
+import type { AmpPresetId } from '../audio/guitarAmpRig';
 import { useAudioEngineControl } from '../context/AudioEngineContext';
+import { AMP_CHANNEL_CARDS, AmpControlPill, RisoRotaryKnob } from './AmpHeadPopover';
 import type {
   CoursePracticeMode,
   CourseTabNote,
@@ -85,50 +86,6 @@ const INITIAL_MOTION: StageMotionSnapshot = {
   focusStartBeat: 0,
 };
 
-interface StompboxDef {
-  id: AmpPresetId;
-  name: string;
-  tag: string;
-  bg: string;
-  text: string;
-  led: string;
-  drivePct: number;
-  roomPct: number;
-}
-
-const STOMPBOXES: readonly StompboxDef[] = [
-  {
-    id: 'clean-studio',
-    name: 'TWIN CLEAN',
-    tag: '6L6 HEADROOM',
-    bg: '#2B59FF',
-    text: '#FFFFFF',
-    led: '#D8FF2E',
-    drivePct: 24,
-    roomPct: 42,
-  },
-  {
-    id: 'blues-breakup',
-    name: 'TWEED CRUNCH',
-    tag: 'WARM SAG',
-    bg: '#FF8A00',
-    text: '#121212',
-    led: '#D8FF2E',
-    drivePct: 56,
-    roomPct: 36,
-  },
-  {
-    id: 'british-crunch',
-    name: 'PLEXI LEAD',
-    tag: 'EL34 BITE',
-    bg: '#FF3B7F',
-    text: '#FFFFFF',
-    led: '#D8FF2E',
-    drivePct: 82,
-    roomPct: 28,
-  },
-];
-
 export function CourseStageView({
   course,
   initialMode = 'play',
@@ -146,10 +103,12 @@ export function CourseStageView({
     isListening,
     audioLatencyMs,
     ampSettings,
+    asioStatus,
     detectionRef,
     start,
     stop,
     updateAmpSettings,
+    probeAsioBridge,
     setInputGated,
     resetDsp,
   } = useAudioEngineControl();
@@ -163,7 +122,6 @@ export function CourseStageView({
     Math.round(soundGenerator.getVolume() * 100),
   );
   const [detailOpen, setDetailOpen] = useState<boolean>(initialDetailOpen);
-  const [activeStomp, setActiveStomp] = useState<AmpPresetId>('blues-breakup');
   const [windowStartBar, setWindowStartBar] = useState<number>(1);
   const [vanishPass, setVanishPass] = useState<VanishPass>(1);
 
@@ -325,9 +283,15 @@ export function CourseStageView({
   };
 
   const handleSelectStomp = (presetId: AmpPresetId) => {
-    setActiveStomp(presetId);
-    if (AMP_PRESETS.some((p) => p.id === presetId)) {
-      void updateAmpSettings({ enabled: true, preset: presetId });
+    const pedal = AMP_CHANNEL_CARDS.find((p) => p.id === presetId);
+    if (pedal) {
+      void updateAmpSettings({
+        enabled: true,
+        preset: presetId,
+        drive: pedal.defaultDrive,
+        tone: pedal.defaultTone,
+        reverb: pedal.defaultReverb,
+      });
     }
   };
 
@@ -732,16 +696,17 @@ export function CourseStageView({
             })}
           </div>
 
-          <button
-            type="button"
-            onClick={() => void updateAmpSettings({ enabled: !ampSettings.enabled })}
-            className={`px-2 py-1 rounded-lg border-[2px] border-[#121212] font-mono text-[10px] font-bold flex items-center gap-1 ${
-              ampOn ? 'bg-[#FF8A00] text-[#121212]' : 'bg-[#FFFBF0] text-[#57534A]'
-            }`}
-          >
-            <span className={`w-1.5 h-1.5 rounded-full border border-[#121212] ${ampOn ? 'bg-[#D8FF2E]' : 'bg-[#F4ECDC]'}`} />
-            AMP
-          </button>
+          {asioStatus.asioConnected && (
+            <span
+              className="hidden md:inline-flex items-center gap-1 px-2 py-1 rounded-lg border-[2px] border-[#121212] bg-[#2B59FF] text-white font-mono text-[10px] font-bold"
+              title={`Zero-GC Native ASIO Active: ${asioStatus.driverName} (${asioStatus.bufferSize} smp @ ${(asioStatus.sampleRate / 1000).toFixed(0)}kHz)`}
+            >
+              <span className="w-1.5 h-1.5 rounded-full bg-[#1CE088] border border-[#121212]" />
+              ASIO {asioStatus.latencyMs.toFixed(1)}ms
+            </span>
+          )}
+
+          <AmpControlPill compact demoMode={demoMode} />
 
           <button
             type="button"
@@ -967,99 +932,168 @@ export function CourseStageView({
             />
           </div>
 
-          {/* LOWER PANEL (Strictly <= 215px tall!): Muscular Compact 3-Pedal Stompbox Rack + Backing Groove */}
+          {/* LOWER PANEL (Strictly <= 215px tall!): Interactive 4-Channel Tube Stompbox Rack + Backing Groove */}
           <div className="h-[212px] max-h-[215px] shrink-0 grid grid-cols-1 lg:grid-cols-12 gap-3">
-            {/* 3-Pedal Tactile Stompbox Rack (Enlarged 42x42px Rotary Knobs, Zero Tall Empty Slabs!) */}
+            {/* 4-Channel Interactive Stompbox Rack (Real Draggable Rotary Knobs + Nitro 5150 High-Gain!) */}
             <div className="lg:col-span-8 neo-card bg-[#FFFBF0] p-3 flex flex-col justify-between h-full">
-              <div className="flex items-center justify-between gap-2 shrink-0">
+              <div className="flex items-center justify-between gap-2 shrink-0 flex-wrap">
                 <div className="flex items-center gap-2">
                   <span className="px-2 py-0.5 rounded-lg bg-[#121212] text-[#D8FF2E] font-mono text-[10px] font-bold">
-                    3-PEDAL STOMPBOX RACK
+                    4-CHANNEL TUBE RIG
                   </span>
-                  <span className="font-mono text-[10px] font-bold text-[#57534A]">
-                    WASM AMP MONITOR
-                  </span>
+                  {asioStatus.asioConnected ? (
+                    <span className="px-2 py-0.5 rounded-md bg-[#2B59FF] text-white border border-[#121212] font-mono text-[10px] font-bold">
+                      ⚡ ASIO {asioStatus.latencyMs.toFixed(1)}ms NATIVE AMP
+                    </span>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => void probeAsioBridge()}
+                      className="font-mono text-[10px] font-bold text-[#57534A] hover:text-[#121212]"
+                      title="Click to connect native low-latency ASIO service"
+                    >
+                      WASM AMP MONITOR
+                    </button>
+                  )}
                 </div>
-                <button
-                  type="button"
-                  onClick={() => void updateAmpSettings({ enabled: !ampSettings.enabled })}
-                  className={`px-2.5 py-0.5 rounded-full border-2 border-[#121212] font-mono text-[10px] font-bold ${
-                    ampOn ? 'bg-[#D8FF2E] text-[#121212]' : 'bg-[#F4ECDC] text-[#57534A]'
-                  }`}
-                >
-                  {ampOn ? '● RIG LIVE' : '○ BYPASS'}
-                </button>
+
+                <div className="flex items-center gap-1.5">
+                  <label className="hidden sm:inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-[#F4ECDC] border border-[#121212] font-mono text-[9.5px] font-bold">
+                    <span>LVL</span>
+                    <input
+                      type="range"
+                      min={0}
+                      max={100}
+                      value={Math.round(ampSettings.volume * 100)}
+                      onChange={(e) =>
+                        void updateAmpSettings({
+                          enabled: true,
+                          volume: Number(e.target.value) / 100,
+                        })
+                      }
+                      className="w-16 accent-[#FF3B7F] cursor-pointer h-1.5"
+                      aria-label="Guitar amp output volume"
+                    />
+                    <span className="tabular-nums w-7 text-right">
+                      {Math.round(ampSettings.volume * 100)}%
+                    </span>
+                  </label>
+
+                  <button
+                    type="button"
+                    onClick={() =>
+                      void updateAmpSettings({
+                        enabled: true,
+                        preset: 'insane-lead',
+                        drive: 0.95,
+                        tone: 0.80,
+                        reverb: 0.18,
+                        volume: 0.86,
+                      })
+                    }
+                    className="px-2.5 py-0.5 rounded-full border-2 border-[#121212] bg-[#FF3B7F] text-white font-mono text-[10px] font-extrabold hover:brightness-110"
+                    title="Engage 3-Stage Nitro 5150 Shred Drive at 95%!"
+                  >
+                    🔥 GO NUTS
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => void updateAmpSettings({ enabled: !ampSettings.enabled })}
+                    className={`px-2.5 py-0.5 rounded-full border-2 border-[#121212] font-mono text-[10px] font-bold ${
+                      ampOn ? 'bg-[#D8FF2E] text-[#121212]' : 'bg-[#F4ECDC] text-[#57534A]'
+                    }`}
+                  >
+                    {ampOn ? '● RIG LIVE' : '○ BYPASS'}
+                  </button>
+                </div>
               </div>
 
-              <div className="grid grid-cols-3 gap-3 flex-1 min-h-0 mt-2">
-                {STOMPBOXES.map((pedal) => {
-                  const active = activeStomp === pedal.id;
+              <div className="grid grid-cols-4 gap-2.5 flex-1 min-h-0 mt-2">
+                {AMP_CHANNEL_CARDS.map((pedal) => {
+                  const active = ampSettings.preset === pedal.id;
+                  const shownDrive = active
+                    ? Math.round(ampSettings.drive * 100)
+                    : Math.round(pedal.defaultDrive * 100);
+                  const shownTone = active
+                    ? Math.round((ampSettings.tone ?? pedal.defaultTone) * 100)
+                    : Math.round(pedal.defaultTone * 100);
+
                   return (
-                    <button
+                    <div
                       key={pedal.id}
-                      type="button"
                       onClick={() => handleSelectStomp(pedal.id)}
-                      className={`rounded-2xl border-[2.5px] border-[#121212] px-3 py-2.5 text-left flex flex-col justify-between transition-all cursor-pointer ${
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault();
+                          handleSelectStomp(pedal.id);
+                        }
+                      }}
+                      role="button"
+                      tabIndex={0}
+                      className={`rounded-2xl border-[2.5px] border-[#121212] px-2.5 py-2 text-left flex flex-col justify-between transition-all cursor-pointer ${
                         active
                           ? 'border-b-[5px] -translate-y-[1px] ring-2 ring-[#D8FF2E]'
-                          : 'border-b-[3px] opacity-90 hover:opacity-100'
+                          : 'border-b-[3px] opacity-88 hover:opacity-100'
                       }`}
                       style={{ backgroundColor: pedal.bg, color: pedal.text }}
                     >
-                      {/* Top LED + Compact Row of Enlarged 42x42px Rotary Knobs */}
-                      <div className="flex items-center justify-between gap-2">
-                        <div className="flex items-center gap-1.5">
+                      {/* Top LED + Two Live Interactive Rotary Knobs (Drag up/down or scroll!) */}
+                      <div className="flex items-center justify-between gap-1.5">
+                        <div className="flex items-center gap-1">
                           <span
-                            className="w-2.5 h-2.5 rounded-full border-[1.8px] border-[#121212]"
+                            className="w-2.5 h-2.5 rounded-full border-[1.8px] border-[#121212] shrink-0"
                             style={{ backgroundColor: active ? pedal.led : 'rgba(255,255,255,0.28)' }}
                           />
-                          <span className="font-mono text-[9px] font-bold tracking-wider opacity-90">
-                            {active ? 'ACTIVE' : 'BYPASS'}
-                          </span>
                         </div>
 
-                        {/* Two Muscular 42x42px Rotary Knobs Side-by-Side */}
-                        <div className="flex items-center gap-2.5">
-                          <div className="flex flex-col items-center">
-                            <div className="w-[42px] h-[42px] rounded-full bg-[#121212] border-2 border-[#FFFBF0] relative flex items-center justify-center shadow-sm">
-                              <span
-                                className="w-1 h-4 bg-[#D8FF2E] rounded-full origin-bottom -translate-y-1.5"
-                                style={{ transform: `rotate(${-120 + pedal.drivePct * 2.4}deg)` }}
-                              />
-                            </div>
-                            <span className="font-mono text-[8.5px] font-bold mt-0.5 opacity-95">
-                              DRV {pedal.drivePct}%
-                            </span>
-                          </div>
-                          <div className="flex flex-col items-center">
-                            <div className="w-[42px] h-[42px] rounded-full bg-[#121212] border-2 border-[#FFFBF0] relative flex items-center justify-center shadow-sm">
-                              <span
-                                className="w-1 h-4 bg-[#D8FF2E] rounded-full origin-bottom -translate-y-1.5"
-                                style={{ transform: `rotate(${-120 + pedal.roomPct * 2.4}deg)` }}
-                              />
-                            </div>
-                            <span className="font-mono text-[8.5px] font-bold mt-0.5 opacity-95">
-                              AIR {pedal.roomPct}%
-                            </span>
-                          </div>
+                        <div className="flex items-center gap-2">
+                          <RisoRotaryKnob
+                            label="DRV"
+                            valuePct={shownDrive}
+                            onChangePct={(pct) =>
+                              void updateAmpSettings({
+                                enabled: true,
+                                preset: pedal.id,
+                                drive: pct / 100,
+                              })
+                            }
+                            size={38}
+                            accentColor={pedal.id === 'insane-lead' ? '#FF3B7F' : '#D8FF2E'}
+                            textColor={pedal.text}
+                          />
+                          <RisoRotaryKnob
+                            label="BITE"
+                            valuePct={shownTone}
+                            onChangePct={(pct) =>
+                              void updateAmpSettings({
+                                enabled: true,
+                                preset: pedal.id,
+                                tone: pct / 100,
+                              })
+                            }
+                            size={38}
+                            accentColor="#D8FF2E"
+                            textColor={pedal.text}
+                          />
                         </div>
                       </div>
 
                       {/* Pedal Title + Tactile Footswitch Bar */}
-                      <div className="flex items-end justify-between gap-2 mt-1">
+                      <div className="flex items-end justify-between gap-1.5 mt-1">
                         <div className="min-w-0">
-                          <div className="font-syne text-[13px] font-extrabold leading-tight truncate">
+                          <div className="font-syne text-[11.5px] font-extrabold leading-tight truncate">
                             {pedal.name}
                           </div>
-                          <div className="font-mono text-[9px] font-bold opacity-80">
+                          <div className="font-mono text-[8.5px] font-bold opacity-85 truncate">
                             {pedal.tag}
                           </div>
                         </div>
-                        <div className="px-2.5 py-1 rounded-lg bg-[#FFFBF0] border-2 border-[#121212] font-mono text-[9.5px] font-bold text-[#121212] shrink-0">
+                        <div className="px-2 py-0.5 rounded-lg bg-[#FFFBF0] border-2 border-[#121212] font-mono text-[9px] font-bold text-[#121212] shrink-0">
                           {active ? 'ON ✓' : 'STOMP'}
                         </div>
                       </div>
-                    </button>
+                    </div>
                   );
                 })}
               </div>

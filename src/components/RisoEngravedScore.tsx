@@ -23,22 +23,25 @@ export interface RisoEngravedScoreProps {
   demoMode?: boolean;
 }
 
-// Coupled Two-System Grand Guitar Score Geometry (§2.3 & §2.6 — 04-monolith-jazz copperplate discipline)
+// Coupled Two-System Grand Guitar Score Geometry (§2.3 & §2.6 — Copperplate Rhythm Engraving)
 const SVG_W = 1280;
-const SVG_H = 430;
-const MARGIN_LEFT = 86;
+const SVG_H = 448;
+const SYSTEM_LEFT = 24;
+const MARGIN_LEFT = 114;
 const MARGIN_RIGHT = 32;
 const SCORE_W = SVG_W - MARGIN_LEFT - MARGIN_RIGHT;
 
-// Top System: 5-Line Engraved Treble Staff (116, 132, 148, 164, 180)
-const STAFF_TOP = 116;
+// Top System: 5-Line Engraved Treble Staff (112, 128, 144, 160, 176)
+const STAFF_TOP = 112;
 const STAFF_GAP = 16;
 const STAFF_BOTTOM = STAFF_TOP + STAFF_GAP * 4;
 
-// Bottom System: Standard 6-Line Guitar TAB (e, B, G, D, A, E -> 262, 282, 302, 322, 342, 362)
-const TAB_TOP = 262;
+// Bottom System: Standard 6-Line Guitar TAB (e, B, G, D, A, E -> 252, 272, 292, 312, 332, 352)
+const TAB_TOP = 252;
 const TAB_GAP = 20;
 const TAB_BOTTOM = TAB_TOP + TAB_GAP * 5;
+const TAB_STEM_TOP = TAB_BOTTOM + 13;
+const TAB_STEM_BOTTOM = TAB_BOTTOM + 35;
 const TAB_STRINGS = ['e', 'B', 'G', 'D', 'A', 'E'] as const;
 
 const STEP_BY_SEMITONE = [0, 0, 1, 1, 2, 3, 3, 4, 4, 5, 5, 6] as const;
@@ -52,6 +55,85 @@ const VANISH_TABS: ReadonlyArray<{ pass: VanishPass; label: string }> = [
   { pass: 3, label: '25% CONTOUR' },
   { pass: 4, label: '0% EAR' },
 ];
+
+type NoteDurationKind = 'whole' | 'half' | 'quarter' | 'eighth' | 'sixteenth';
+
+interface RhythmSpec {
+  kind: NoteDurationKind;
+  hollow: boolean;
+  hasStem: boolean;
+  beamCount: 0 | 1 | 2;
+  dotted: boolean;
+}
+
+interface LaidOutScoreNote {
+  note: CourseTabNote;
+  midi: number;
+  isSharp: boolean;
+  x: number;
+  staffY: number;
+  tabY: number;
+  rhythm: RhythmSpec;
+}
+
+interface StemAssignment {
+  stemDown: boolean;
+  stemX: number;
+  tipY: number;
+  beamed: boolean;
+}
+
+interface SlantedBeamSegment {
+  key: string;
+  points: string;
+  fill: string;
+  opacity: number;
+}
+
+interface TabBeamSegment {
+  key: string;
+  x1: number;
+  x2: number;
+  y: number;
+  height: number;
+  fill: string;
+  opacity: number;
+}
+
+/**
+ * Maps `durationBeats` (in quarter-note beats) to authentic standard notation
+ * notehead, stem, beam/flag count, and augmentation-dot attributes.
+ */
+function classifyNoteRhythm(durationBeats: number): RhythmSpec {
+  if (durationBeats >= 3.75) {
+    return { kind: 'whole', hollow: true, hasStem: false, beamCount: 0, dotted: false };
+  }
+  if (durationBeats >= 2.75) {
+    return { kind: 'half', hollow: true, hasStem: true, beamCount: 0, dotted: true };
+  }
+  if (durationBeats >= 1.85) {
+    return {
+      kind: 'half',
+      hollow: true,
+      hasStem: true,
+      beamCount: 0,
+      dotted: durationBeats >= 2.35,
+    };
+  }
+  if (durationBeats >= 1.38) {
+    return { kind: 'quarter', hollow: false, hasStem: true, beamCount: 0, dotted: true };
+  }
+  if (durationBeats >= 0.86) {
+    return { kind: 'quarter', hollow: false, hasStem: true, beamCount: 0, dotted: false };
+  }
+  if (durationBeats >= 0.68) {
+    return { kind: 'eighth', hollow: false, hasStem: true, beamCount: 1, dotted: true };
+  }
+  if (durationBeats >= 0.36) {
+    return { kind: 'eighth', hollow: false, hasStem: true, beamCount: 1, dotted: false };
+  }
+  return { kind: 'sixteenth', hollow: false, hasStem: true, beamCount: 2, dotted: false };
+}
 
 function midiToDiatonic(midi: number): { step: number; isSharp: boolean } {
   const r = Math.round(midi);
@@ -69,7 +151,7 @@ function midiToStaffY(midi: number): number {
   const { step } = midiToDiatonic(midi);
   // Guitar sounds an octave below written treble; anchor E3 on bottom line
   const y = STAFF_BOTTOM - (step - E3_STEP) * (STAFF_GAP / 2);
-  return Math.max(76, Math.min(218, y));
+  return Math.max(72, Math.min(212, y));
 }
 
 function stringToTabY(stringNum: 1 | 2 | 3 | 4 | 5 | 6): number {
@@ -102,6 +184,43 @@ function buildVibratoWavePath(startX: number, y: number, length: number): string
   return d;
 }
 
+/**
+ * Engraved calligraphic S-curve flag for standalone (unbeamed) 8th / 16th notes.
+ */
+function buildMusicalFlagPath(
+  stemX: number,
+  tipY: number,
+  stemDown: boolean,
+  flagIndex: number,
+): string {
+  if (!stemDown) {
+    const y0 = tipY + flagIndex * 7.5;
+    return [
+      `M ${stemX.toFixed(1)} ${y0.toFixed(1)}`,
+      `C ${(stemX + 6).toFixed(1)} ${(y0 + 3.5).toFixed(1)}, ${(stemX + 12.5).toFixed(1)} ${(y0 + 9.5).toFixed(1)}, ${(stemX + 9.2).toFixed(1)} ${(y0 + 18.5).toFixed(1)}`,
+      `C ${(stemX + 10.6).toFixed(1)} ${(y0 + 11.5).toFixed(1)}, ${(stemX + 5.2).toFixed(1)} ${(y0 + 6.8).toFixed(1)}, ${stemX.toFixed(1)} ${(y0 + 4.4).toFixed(1)}`,
+      'Z',
+    ].join(' ');
+  }
+  const y0 = tipY - flagIndex * 7.5;
+  return [
+    `M ${stemX.toFixed(1)} ${y0.toFixed(1)}`,
+    `C ${(stemX + 6).toFixed(1)} ${(y0 - 3.5).toFixed(1)}, ${(stemX + 12.5).toFixed(1)} ${(y0 - 9.5).toFixed(1)}, ${(stemX + 9.2).toFixed(1)} ${(y0 - 18.5).toFixed(1)}`,
+    `C ${(stemX + 10.6).toFixed(1)} ${(y0 - 11.5).toFixed(1)}, ${(stemX + 5.2).toFixed(1)} ${(y0 - 6.8).toFixed(1)}, ${stemX.toFixed(1)} ${(y0 - 4.4).toFixed(1)}`,
+    'Z',
+  ].join(' ');
+}
+
+function makeBeamPolygon(
+  x1: number,
+  y1: number,
+  x2: number,
+  y2: number,
+  inwardThickness: number,
+): string {
+  return `${x1.toFixed(2)},${y1.toFixed(2)} ${x2.toFixed(2)},${y2.toFixed(2)} ${x2.toFixed(2)},${(y2 + inwardThickness).toFixed(2)} ${x1.toFixed(2)},${(y1 + inwardThickness).toFixed(2)}`;
+}
+
 export function RisoEngravedScore({
   course,
   mode,
@@ -130,7 +249,7 @@ export function RisoEngravedScore({
     const rel = courseBeat - windowStartBeat;
     const barIdx = Math.floor(rel / course.beatsPerBar);
     const beatInBar = rel - barIdx * course.beatsPerBar;
-    const padL = 30;
+    const padL = 28;
     const padR = 22;
     const usable = Math.max(40, barWidth - padL - padR);
     return (
@@ -141,7 +260,7 @@ export function RisoEngravedScore({
     );
   };
 
-  const laidOutNotes = useMemo(() => {
+  const laidOutNotes: ReadonlyArray<LaidOutScoreNote> = useMemo(() => {
     return course.notes
       .filter((n) => n.bar >= windowStartBar && n.bar <= windowEndBar)
       .map((n) => {
@@ -150,7 +269,8 @@ export function RisoEngravedScore({
         const x = beatToX(n.startBeat);
         const staffY = midiToStaffY(midi);
         const tabY = stringToTabY(n.stringNum);
-        return { note: n, midi, isSharp, x, staffY, tabY };
+        const rhythm = classifyNoteRhythm(n.durationBeats);
+        return { note: n, midi, isSharp, x, staffY, tabY, rhythm };
       });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [course.notes, course.beatsPerBar, windowStartBar, windowEndBar, visibleBarCount]);
@@ -160,7 +280,6 @@ export function RisoEngravedScore({
     [laidOutNotes],
   );
 
-  // Demo playhead lands on Bar 3 downbeat (Gmaj7) so Hits, Active Lime Badge, and Upcoming are all clearly demonstrated
   const demoPlayheadBeat = useMemo(() => {
     const bar3Note = laidOutNotes.find((n) => n.note.bar === windowStartBar + 2);
     return bar3Note ? bar3Note.note.startBeat : windowStartBeat + 0.5;
@@ -174,6 +293,217 @@ export function RisoEngravedScore({
     }
     return null;
   }, [activeNoteId, demoMode, forensicMode, laidOutNotes, runState, windowStartBar]);
+
+  // Vanishing ink opacity tiers (Pass 1..4) — bypassed in forensic review mode
+  const effectivePass: VanishPass = forensicMode ? 1 : vanishPass;
+  const getInkOpacity = (note: CourseTabNote, isActive: boolean): number => {
+    if (forensicMode || isActive) return 1;
+    if (effectivePass === 1) return 1;
+    if (effectivePass === 2) return note.isAnchor ? 0.92 : 0.45;
+    if (effectivePass === 3) return note.isAnchor ? 0.48 : 0.14;
+    return 0.05;
+  };
+
+  /**
+   * Measure- and half-bar-aware 8th / 16th beam grouping for BOTH the 5-Line Treble Staff
+   * and the Guitar-Pro-style rhythm rail underneath the 6-Line TAB.
+   */
+  const rhythmLayout = useMemo(() => {
+    const stemsById: Record<string, StemAssignment> = {};
+    const staffBeams: SlantedBeamSegment[] = [];
+    const tabBeams: TabBeamSegment[] = [];
+
+    const halfBarSize = course.beatsPerBar === 4 ? 2 : 1;
+    const canBeamTogether = (a: LaidOutScoreNote, b: LaidOutScoreNote): boolean => {
+      if (a.rhythm.beamCount < 1 || b.rhythm.beamCount < 1) return false;
+      if (a.note.bar !== b.note.bar) return false;
+      const groupA = Math.floor((a.note.beatInBar + 0.001) / halfBarSize);
+      const groupB = Math.floor((b.note.beatInBar + 0.001) / halfBarSize);
+      if (groupA !== groupB) return false;
+      const endA = a.note.startBeat + a.note.durationBeats;
+      return Math.abs(b.note.startBeat - endA) <= 0.22;
+    };
+
+    let idx = 0;
+    while (idx < laidOutNotes.length) {
+      const first = laidOutNotes[idx];
+      if (first.rhythm.beamCount >= 1) {
+        const group: LaidOutScoreNote[] = [first];
+        while (
+          idx + 1 < laidOutNotes.length &&
+          canBeamTogether(group[group.length - 1], laidOutNotes[idx + 1]) &&
+          group.length < 4
+        ) {
+          idx += 1;
+          group.push(laidOutNotes[idx]);
+        }
+
+        if (group.length >= 2) {
+          const avgStaffY =
+            group.reduce((sum, n) => sum + n.staffY, 0) / group.length;
+          const stemDown = avgStaffY <= STAFF_TOP + STAFF_GAP * 2;
+          const stemOffset = stemDown ? -6.3 : 6.3;
+
+          const firstX = group[0].x + stemOffset;
+          const lastX = group[group.length - 1].x + stemOffset;
+          const spanX = Math.max(1, lastX - firstX);
+
+          const idealFirstY = stemDown ? group[0].staffY + 34 : group[0].staffY - 34;
+          const rawDeltaY = group[group.length - 1].staffY - group[0].staffY;
+          const clampedDeltaY = Math.max(-11, Math.min(11, rawDeltaY * 0.45));
+          let y1 = idealFirstY;
+          let y2 = idealFirstY + clampedDeltaY;
+
+          // Guarantee >= 27px stem clearance on every intermediate notehead in the group
+          for (const member of group) {
+            const mx = member.x + stemOffset;
+            const t = (mx - firstX) / spanX;
+            const beamY = y1 + (y2 - y1) * t;
+            if (stemDown) {
+              const needed = member.staffY + 27 - beamY;
+              if (needed > 0) {
+                y1 += needed;
+                y2 += needed;
+              }
+            } else {
+              const needed = beamY - (member.staffY - 27);
+              if (needed > 0) {
+                y1 -= needed;
+                y2 -= needed;
+              }
+            }
+          }
+
+          const beamYAt = (sx: number): number =>
+            y1 + (y2 - y1) * ((sx - firstX) / spanX);
+
+          const groupOpacity = Math.max(
+            ...group.map((m) =>
+              getInkOpacity(m.note, !forensicMode && effectiveActiveId === m.note.id),
+            ),
+          );
+
+          const allGroupHit = group.every((m) => {
+            const isAct = !forensicMode && effectiveActiveId === m.note.id;
+            if (isAct) return false;
+            if (noteStatusRef.current[m.note.id] === 'hit') return true;
+            if (forensicMode) return true;
+            return demoMode && runState === 'idle' && m.note.startBeat < demoPlayheadBeat;
+          });
+          const groupFill = allGroupHit ? '#0D9F6E' : '#121212';
+
+          const inwardPrimary = stemDown ? -4.1 : 4.1;
+          staffBeams.push({
+            key: `sb1-${group[0].note.id}`,
+            points: makeBeamPolygon(firstX, y1, lastX, y2, inwardPrimary),
+            fill: groupFill,
+            opacity: groupOpacity,
+          });
+
+          tabBeams.push({
+            key: `tb1-${group[0].note.id}`,
+            x1: group[0].x,
+            x2: group[group.length - 1].x,
+            y: TAB_STEM_BOTTOM - 3.6,
+            height: 3.6,
+            fill: groupFill,
+            opacity: groupOpacity,
+          });
+
+          // Secondary 16th beams (full span between adjacent 16ths, or fractional 16th hook)
+          const secondOffset = stemDown ? -6.8 : 6.8;
+          const inwardSecondary = stemDown ? -3.5 : 3.5;
+
+          for (let g = 0; g < group.length; g += 1) {
+            const cur = group[g];
+            const sx = cur.x + stemOffset;
+            stemsById[cur.note.id] = {
+              stemDown,
+              stemX: sx,
+              tipY: beamYAt(sx),
+              beamed: true,
+            };
+
+            if (cur.rhythm.beamCount >= 2) {
+              const next = group[g + 1];
+              const prev = group[g - 1];
+              if (next && next.rhythm.beamCount >= 2) {
+                const nx = next.x + stemOffset;
+                staffBeams.push({
+                  key: `sb2-${cur.note.id}-${next.note.id}`,
+                  points: makeBeamPolygon(
+                    sx,
+                    beamYAt(sx) + secondOffset,
+                    nx,
+                    beamYAt(nx) + secondOffset,
+                    inwardSecondary,
+                  ),
+                  fill: groupFill,
+                  opacity: groupOpacity,
+                });
+                tabBeams.push({
+                  key: `tb2-${cur.note.id}-${next.note.id}`,
+                  x1: cur.x,
+                  x2: next.x,
+                  y: TAB_STEM_BOTTOM - 9.4,
+                  height: 3.1,
+                  fill: groupFill,
+                  opacity: groupOpacity,
+                });
+              } else if (!prev || prev.rhythm.beamCount < 2) {
+                // Fractional 16th stub pointing inward toward neighbor (e.g. dotted-8th + 16th)
+                const stubDir = g === group.length - 1 ? -1 : 1;
+                const stubX = sx + stubDir * 11;
+                const xStart = Math.min(sx, stubX);
+                const xEnd = Math.max(sx, stubX);
+                staffBeams.push({
+                  key: `sb2-stub-${cur.note.id}`,
+                  points: makeBeamPolygon(
+                    xStart,
+                    beamYAt(xStart) + secondOffset,
+                    xEnd,
+                    beamYAt(xEnd) + secondOffset,
+                    inwardSecondary,
+                  ),
+                  fill: groupFill,
+                  opacity: groupOpacity,
+                });
+                const tabStubX1 = Math.min(cur.x, cur.x + stubDir * 11);
+                const tabStubX2 = Math.max(cur.x, cur.x + stubDir * 11);
+                tabBeams.push({
+                  key: `tb2-stub-${cur.note.id}`,
+                  x1: tabStubX1,
+                  x2: tabStubX2,
+                  y: TAB_STEM_BOTTOM - 9.4,
+                  height: 3.1,
+                  fill: groupFill,
+                  opacity: groupOpacity,
+                });
+              }
+            }
+          }
+
+          idx += 1;
+          continue;
+        }
+      }
+
+      // Unbeamed standalone note (whole, half, quarter, or isolated 8th/16th)
+      const stemDown = first.staffY <= STAFF_TOP + STAFF_GAP * 2;
+      const stemX = stemDown ? first.x - 6.3 : first.x + 6.3;
+      const tipY = stemDown ? first.staffY + 34 : first.staffY - 34;
+      stemsById[first.note.id] = {
+        stemDown,
+        stemX,
+        tipY,
+        beamed: false,
+      };
+      idx += 1;
+    }
+
+    return { stemsById, staffBeams, tabBeams };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [course.beatsPerBar, effectiveActiveId, effectivePass, forensicMode, laidOutNotes]);
 
   // Zero-jank 60/120fps playhead motion driven directly on SVG ref
   useEffect(() => {
@@ -205,16 +535,6 @@ export function RisoEngravedScore({
     return () => cancelAnimationFrame(rafId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [demoMode, demoPlayheadBeat, forensicMode, motionRef, runState, windowStartBeat, windowTotalBeats]);
-
-  // Vanishing ink opacity tiers (Pass 1..4) — bypassed in forensic review mode
-  const effectivePass: VanishPass = forensicMode ? 1 : vanishPass;
-  const getInkOpacity = (note: CourseTabNote, isActive: boolean): number => {
-    if (forensicMode || isActive) return 1;
-    if (effectivePass === 1) return 1;
-    if (effectivePass === 2) return note.isAnchor ? 0.92 : 0.45;
-    if (effectivePass === 3) return note.isAnchor ? 0.48 : 0.14;
-    return 0.05;
-  };
 
   // Continuous played pitch forensic ribbon + timing pocket envelope + 3 delicate 1px hairline callouts (§2.6)
   const forensicData = useMemo(() => {
@@ -300,7 +620,7 @@ export function RisoEngravedScore({
           : 'Coupled 5-Line Staff and 6-Line Guitar TAB'
       }
     >
-      {/* Subtle Top Controls Bar ONLY when needed (Window Switcher / Vanishing Pass / Forensic Legend) — Zero duplicate chord row! */}
+      {/* Subtle Top Controls Bar ONLY when needed (Window Switcher / Vanishing Pass / Forensic Legend) */}
       {(showVanishStrip || hasMultipleWindows || forensicMode) && (
         <div className="px-4 py-1.5 bg-[#F4ECDC]/75 border-b border-[#121212]/20 flex items-center justify-between gap-2 shrink-0">
           <div className="flex items-center gap-2 font-mono text-[10px] font-bold text-[#57534A]">
@@ -317,7 +637,7 @@ export function RisoEngravedScore({
               </>
             ) : (
               <span className="tracking-wider uppercase">
-                COUPLED TREBLE STAFF + 6-LINE TAB
+                COUPLED TREBLE STAFF + 6-LINE RHYTHM TAB ({course.beatsPerBar}/4)
               </span>
             )}
           </div>
@@ -374,22 +694,23 @@ export function RisoEngravedScore({
           preserveAspectRatio="xMidYMid meet"
           className="w-full h-full max-h-full block select-none"
           role="img"
-          aria-label="Coupled 5-line treble staff and 6-line guitar TAB"
+          aria-label="Coupled 5-line treble staff and 6-line guitar rhythm TAB"
         >
           {/* Coupled Left Grand-System Brace connecting Staff + TAB */}
           <line
-            x1={MARGIN_LEFT - 10}
+            x1={SYSTEM_LEFT}
             y1={STAFF_TOP}
-            x2={MARGIN_LEFT - 10}
+            x2={SYSTEM_LEFT}
             y2={TAB_BOTTOM}
             stroke="#121212"
-            strokeWidth="2.2"
+            strokeWidth="2.5"
           />
 
-          {/* Measure Columns, Clickable BAR 01..04 Chord Headers (Printed ONCE!), and Shared Barlines */}
+          {/* Measure Columns, Beat Subdivision Ticks, Clickable BAR 01..04 Chord Headers, and Shared Barlines */}
           {Array.from({ length: visibleBarCount }, (_, idx) => {
             const barNum = windowStartBar + idx;
             const bx = MARGIN_LEFT + idx * barWidth;
+            const barStartBeat = (barNum - 1) * course.beatsPerBar;
             const isLoopedBar =
               loopRange !== 'all' &&
               barNum >= loopRange.startBar &&
@@ -406,9 +727,9 @@ export function RisoEngravedScore({
                 {(isLoopedBar || isActiveBar) && (
                   <rect
                     x={bx}
-                    y={52}
+                    y={50}
                     width={barWidth}
-                    height={TAB_BOTTOM - 32}
+                    height={TAB_STEM_BOTTOM - 40}
                     rx="6"
                     fill={isLoopedBar ? '#2B59FF' : '#D8FF2E'}
                     opacity={isLoopedBar ? 0.06 : 0.11}
@@ -422,7 +743,7 @@ export function RisoEngravedScore({
                   x2={bx}
                   y2={STAFF_BOTTOM}
                   stroke="#121212"
-                  strokeWidth={idx === 0 ? 2 : 1.15}
+                  strokeWidth={idx === 0 ? 1.8 : 1.15}
                   opacity={idx === 0 ? 0.85 : 0.45}
                 />
                 <line
@@ -431,10 +752,10 @@ export function RisoEngravedScore({
                   x2={bx}
                   y2={TAB_BOTTOM}
                   stroke="#121212"
-                  strokeWidth={idx === 0 ? 2 : 1.15}
+                  strokeWidth={idx === 0 ? 1.8 : 1.15}
                   opacity={idx === 0 ? 0.85 : 0.45}
                 />
-                {/* Faint Vertical Guide Connecting Staff & TAB Beat Grid */}
+                {/* Faint Vertical Guide Connecting Staff & TAB Measure Start */}
                 <line
                   x1={bx}
                   y1={STAFF_BOTTOM}
@@ -446,6 +767,34 @@ export function RisoEngravedScore({
                   opacity="0.16"
                 />
 
+                {/* Subtle Beat Count Ticks (1 · 2 · 3 · 4) between Staff and TAB */}
+                {Array.from({ length: course.beatsPerBar }, (__, beatIdx) => {
+                  const beatX = beatToX(barStartBeat + beatIdx);
+                  return (
+                    <g key={`bt-${barNum}-${beatIdx}`} opacity="0.34">
+                      <line
+                        x1={beatX}
+                        y1={TAB_TOP - 14}
+                        x2={beatX}
+                        y2={TAB_TOP - 8}
+                        stroke="#57534A"
+                        strokeWidth="1"
+                      />
+                      <text
+                        x={beatX}
+                        y={TAB_TOP - 17}
+                        textAnchor="middle"
+                        fontFamily="Space Mono, monospace"
+                        fontWeight="700"
+                        fontSize="8.5"
+                        fill="#57534A"
+                      >
+                        {beatIdx + 1}
+                      </text>
+                    </g>
+                  );
+                })}
+
                 {/* Clickable Engraved Bar & Chord Heading (Printed ONCE per bar!) */}
                 <g
                   className="cursor-pointer"
@@ -455,7 +804,7 @@ export function RisoEngravedScore({
                 >
                   <rect
                     x={bx + 8}
-                    y={14}
+                    y={12}
                     width={136}
                     height={28}
                     rx="6"
@@ -463,7 +812,7 @@ export function RisoEngravedScore({
                   />
                   <text
                     x={bx + 12}
-                    y={32}
+                    y={30}
                     fill="#57534A"
                     fontFamily="Space Mono, monospace"
                     fontWeight="700"
@@ -474,7 +823,7 @@ export function RisoEngravedScore({
                   </text>
                   <text
                     x={bx + 68}
-                    y={33}
+                    y={31}
                     fill="#121212"
                     fontFamily="Syne, sans-serif"
                     fontWeight="800"
@@ -499,7 +848,7 @@ export function RisoEngravedScore({
             return (
               <line
                 key={`st-${lineIdx}`}
-                x1={MARGIN_LEFT - 10}
+                x1={SYSTEM_LEFT}
                 y1={y}
                 x2={SVG_W - MARGIN_RIGHT}
                 y2={y}
@@ -510,17 +859,34 @@ export function RisoEngravedScore({
             );
           })}
 
-          {/* Treble Clef Glyph */}
+          {/* Treble Clef Glyph ON Staff */}
           <text
-            x={MARGIN_LEFT - 44}
+            x={SYSTEM_LEFT + 8}
             y={STAFF_BOTTOM - 2}
-            fontSize="74"
+            fontSize="70"
             fontFamily="Georgia, serif"
             fill="#121212"
-            opacity="0.88"
+            opacity="0.9"
           >
             𝄞
           </text>
+
+          {/* Engraved Stacked Time Signature (e.g. 4 / 4) on Treble Staff */}
+          <g
+            fontFamily="Georgia, serif"
+            fontWeight="700"
+            fontSize="31"
+            fill="#121212"
+            opacity="0.9"
+            textAnchor="middle"
+          >
+            <text x={SYSTEM_LEFT + 66} y={STAFF_TOP + STAFF_GAP + 10.5}>
+              {course.beatsPerBar}
+            </text>
+            <text x={SYSTEM_LEFT + 66} y={STAFF_TOP + STAFF_GAP * 3 + 10.5}>
+              4
+            </text>
+          </g>
 
           {/* Subtle Cobalt Melodic Contour Horizon Arc */}
           {contourPath && (
@@ -530,7 +896,7 @@ export function RisoEngravedScore({
               stroke="#2B59FF"
               strokeWidth={effectivePass === 3 ? 2.4 : 1.75}
               strokeLinecap="round"
-              opacity={forensicMode ? 0.28 : effectivePass === 4 ? 0.08 : 0.44}
+              opacity={forensicMode ? 0.28 : effectivePass === 4 ? 0.08 : 0.4}
             />
           )}
 
@@ -540,7 +906,7 @@ export function RisoEngravedScore({
             return (
               <g key={`tab-line-${strLabel}`}>
                 <line
-                  x1={MARGIN_LEFT - 10}
+                  x1={SYSTEM_LEFT}
                   y1={y}
                   x2={SVG_W - MARGIN_RIGHT}
                   y2={y}
@@ -548,13 +914,21 @@ export function RisoEngravedScore({
                   strokeWidth={idx >= 3 ? 1.25 : 1.0}
                   opacity="0.38"
                 />
+                <rect
+                  x={SYSTEM_LEFT + 57}
+                  y={y - 7}
+                  width="14"
+                  height="14"
+                  rx="2"
+                  fill="#FFFBF0"
+                />
                 <text
-                  x={MARGIN_LEFT - 26}
+                  x={SYSTEM_LEFT + 64}
                   y={y + 4}
                   textAnchor="middle"
                   fontFamily="Space Mono, monospace"
                   fontWeight="700"
-                  fontSize="11.5"
+                  fontSize="11"
                   fill="#57534A"
                 >
                   {strLabel}
@@ -563,11 +937,12 @@ export function RisoEngravedScore({
             );
           })}
 
-          {/* Vertical T-A-B Clef Label */}
-          <g fontFamily="Syne, sans-serif" fontWeight="800" fontSize="13" fill="#121212" opacity="0.82">
-            <text x={MARGIN_LEFT - 56} y={TAB_TOP + 22} textAnchor="middle">T</text>
-            <text x={MARGIN_LEFT - 56} y={TAB_TOP + 54} textAnchor="middle">A</text>
-            <text x={MARGIN_LEFT - 56} y={TAB_TOP + 86} textAnchor="middle">B</text>
+          {/* Vertical T-A-B Clef ON TAB Staff */}
+          <g fontFamily="Syne, sans-serif" fontWeight="800" fontSize="14" fill="#121212" opacity="0.86">
+            <rect x={SYSTEM_LEFT + 12} y={TAB_TOP + 8} width="22" height="84" rx="3" fill="#FFFBF0" />
+            <text x={SYSTEM_LEFT + 23} y={TAB_TOP + 24} textAnchor="middle">T</text>
+            <text x={SYSTEM_LEFT + 23} y={TAB_TOP + 55} textAnchor="middle">A</text>
+            <text x={SYSTEM_LEFT + 23} y={TAB_TOP + 86} textAnchor="middle">B</text>
           </g>
 
           {/* ── FORENSIC CONTINUOUS PLAYED PITCH & TIMING POCKET OVERLAY (Screen 03) ── */}
@@ -591,9 +966,31 @@ export function RisoEngravedScore({
             </g>
           )}
 
-          {/* ── COUPLED CLASSICAL STAFF NOTEHEADS + FRAMELESS PRINT TAB DIGITS ── */}
+          {/* ── SLANTED 8TH / 16TH STAFF BEAM BARS & GUITAR-PRO TAB RHYTHM BEAMS ── */}
+          {rhythmLayout.staffBeams.map((seg) => (
+            <polygon
+              key={seg.key}
+              points={seg.points}
+              fill={seg.fill}
+              opacity={seg.opacity}
+            />
+          ))}
+          {rhythmLayout.tabBeams.map((tb) => (
+            <rect
+              key={tb.key}
+              x={tb.x1 - 0.6}
+              y={tb.y}
+              width={Math.max(2, tb.x2 - tb.x1 + 1.2)}
+              height={tb.height}
+              rx="0.8"
+              fill={tb.fill}
+              opacity={tb.opacity * 0.85}
+            />
+          ))}
+
+          {/* ── COUPLED CLASSICAL STAFF RHYTHM NOTEHEADS + TAB FRETS & RHYTHM STEMS ── */}
           {laidOutNotes.map((item, idx) => {
-            const { note, isSharp, x, staffY, tabY } = item;
+            const { note, isSharp, x, staffY, tabY, rhythm } = item;
             const nextItem = laidOutNotes[idx + 1];
             const liveStatus = noteStatusRef.current[note.id];
             const isActive = !forensicMode && effectiveActiveId === note.id;
@@ -612,9 +1009,10 @@ export function RisoEngravedScore({
             }
 
             const inkOpacity = getInkOpacity(note, isActive);
-            const stemDown = staffY <= STAFF_TOP + STAFF_GAP * 2;
-            const stemX = stemDown ? x - 6.2 : x + 6.2;
-            const stemY2 = stemDown ? staffY + 34 : staffY - 34;
+            const stem = rhythmLayout.stemsById[note.id];
+            const stemDown = stem ? stem.stemDown : staffY <= STAFF_TOP + STAFF_GAP * 2;
+            const stemX = stem ? stem.stemX : stemDown ? x - 6.3 : x + 6.3;
+            const stemY2 = stem ? stem.tipY : stemDown ? staffY + 34 : staffY - 34;
 
             const noteheadFill =
               state === 'active'
@@ -633,6 +1031,10 @@ export function RisoEngravedScore({
                   : state === 'miss'
                     ? '#FF3B7F'
                     : '#121212';
+
+            // Shift augmentation dot into adjacent space if notehead sits directly on a staff line
+            const onStaffLine = Math.abs(((staffY - STAFF_TOP) % STAFF_GAP + STAFF_GAP) % STAFF_GAP) < 1.5;
+            const staffDotY = onStaffLine ? staffY - 4.2 : staffY;
 
             // Ledger lines when note sits above top staff line or below bottom staff line
             const ledgerLines: number[] = [];
@@ -663,8 +1065,7 @@ export function RisoEngravedScore({
                   />
                 ))}
 
-                {/* Classical Articulation Marks (ZERO bordered pills!) */}
-                {/* Diagonal Slide Line `/` */}
+                {/* Classical Articulation Marks */}
                 {note.tech === 'slide' && nextItem && nextItem.note.bar === note.bar && (
                   <>
                     <line
@@ -688,7 +1089,6 @@ export function RisoEngravedScore({
                   </>
                 )}
 
-                {/* Wavy Vibrato Squiggle `~~~` */}
                 {note.tech === 'vibrato' && (
                   <path
                     d={buildVibratoWavePath(x + 10, staffY - 16, Math.max(36, note.durationBeats * 46))}
@@ -699,7 +1099,6 @@ export function RisoEngravedScore({
                   />
                 )}
 
-                {/* Curved Hammer-On / Pull-Off Slur `⌒` */}
                 {(note.tech === 'hammer' || note.tech === 'pull') &&
                   nextItem &&
                   nextItem.note.bar === note.bar && (
@@ -738,25 +1137,88 @@ export function RisoEngravedScore({
                   />
                 )}
 
-                {/* Classical Tilted Copperplate Oval Notehead + Thin 1.25px Stem */}
-                <line
-                  x1={stemX}
-                  y1={staffY}
-                  x2={stemX}
-                  y2={stemY2}
-                  stroke={noteheadFill}
-                  strokeWidth="1.25"
-                />
-                <ellipse
-                  cx={x}
-                  cy={staffY}
-                  rx="6.8"
-                  ry="5"
-                  transform={`rotate(-18 ${x} ${staffY})`}
-                  fill={noteheadFill}
-                />
+                {/* Staff Stem (omitted on Whole notes) */}
+                {rhythm.hasStem && (
+                  <line
+                    x1={stemX}
+                    y1={staffY}
+                    x2={stemX}
+                    y2={stemY2}
+                    stroke={noteheadFill}
+                    strokeWidth="1.35"
+                  />
+                )}
 
-                {/* ── BOTTOM SYSTEM: FRAMELESS PRINT TAB DIGIT (ONLY Active Note gets Acid Lime Badge!) ── */}
+                {/* Standalone 8th / 16th Calligraphic Flags (when not part of a beam group) */}
+                {rhythm.hasStem && !stem?.beamed && rhythm.beamCount >= 1 && (
+                  <>
+                    <path
+                      d={buildMusicalFlagPath(stemX, stemY2, stemDown, 0)}
+                      fill={noteheadFill}
+                    />
+                    {rhythm.beamCount >= 2 && (
+                      <path
+                        d={buildMusicalFlagPath(stemX, stemY2, stemDown, 1)}
+                        fill={noteheadFill}
+                      />
+                    )}
+                  </>
+                )}
+
+                {/* Engraved Notehead: Whole vs Hollow Half vs Solid Quarter/8th/16th */}
+                {rhythm.kind === 'whole' ? (
+                  <g>
+                    <ellipse cx={x} cy={staffY} rx="8.2" ry="5.3" fill={noteheadFill} />
+                    <ellipse
+                      cx={x}
+                      cy={staffY}
+                      rx="4.5"
+                      ry="3.3"
+                      transform={`rotate(-22 ${x} ${staffY})`}
+                      fill={state === 'active' ? '#D8FF2E' : '#FFFBF0'}
+                    />
+                  </g>
+                ) : rhythm.hollow ? (
+                  <g>
+                    <ellipse
+                      cx={x}
+                      cy={staffY}
+                      rx="7.2"
+                      ry="5.2"
+                      transform={`rotate(-18 ${x} ${staffY})`}
+                      fill={noteheadFill}
+                    />
+                    <ellipse
+                      cx={x}
+                      cy={staffY}
+                      rx="5.0"
+                      ry="2.6"
+                      transform={`rotate(-30 ${x} ${staffY})`}
+                      fill={state === 'active' ? '#D8FF2E' : '#FFFBF0'}
+                    />
+                  </g>
+                ) : (
+                  <ellipse
+                    cx={x}
+                    cy={staffY}
+                    rx="6.8"
+                    ry="5"
+                    transform={`rotate(-18 ${x} ${staffY})`}
+                    fill={noteheadFill}
+                  />
+                )}
+
+                {/* Augmentation Dot on Staff (`•` for dotted half / dotted quarter / dotted 8th) */}
+                {rhythm.dotted && (
+                  <circle
+                    cx={state === 'active' ? x + 16.5 : x + 12.2}
+                    cy={staffDotY}
+                    r="2.35"
+                    fill={noteheadFill}
+                  />
+                )}
+
+                {/* ── BOTTOM SYSTEM: FRAMELESS PRINT TAB DIGIT + GUITAR-PRO RHYTHM STEM ── */}
                 {state === 'active' ? (
                   <g transform={`translate(${x - 13}, ${tabY - 10})`}>
                     <rect
@@ -781,13 +1243,12 @@ export function RisoEngravedScore({
                   </g>
                 ) : (
                   <g>
-                    {/* Frameless #FFFBF0 Paper Mask clears string line cleanly behind print digit */}
                     <rect
-                      x={x - 10}
-                      y={tabY - 9}
-                      width="20"
-                      height="18"
-                      rx="3"
+                      x={note.fret >= 10 ? x - 7.5 : x - 5.5}
+                      y={tabY - 8}
+                      width={note.fret >= 10 ? 15 : 11}
+                      height={16}
+                      rx="2"
                       fill="#FFFBF0"
                       stroke="none"
                     />
@@ -804,16 +1265,78 @@ export function RisoEngravedScore({
                     </text>
                   </g>
                 )}
+
+                {/* Coupled TAB Rhythm Stem / Flag / Dot directly beneath 6th string */}
+                {rhythm.kind === 'whole' ? (
+                  <circle
+                    cx={x}
+                    cy={TAB_STEM_BOTTOM - 5}
+                    r="3.2"
+                    fill="none"
+                    stroke={tabDigitFill}
+                    strokeWidth="1.5"
+                    opacity="0.78"
+                  />
+                ) : (
+                  <g opacity="0.84">
+                    {/* Half notes use short lower stem; quarter/8th/16th use full stem */}
+                    <line
+                      x1={x}
+                      y1={rhythm.hollow ? TAB_STEM_TOP + 10 : TAB_STEM_TOP}
+                      x2={x}
+                      y2={TAB_STEM_BOTTOM}
+                      stroke={tabDigitFill}
+                      strokeWidth="1.35"
+                    />
+                    {/* Standalone TAB flag(s) when not beamed */}
+                    {!stem?.beamed && rhythm.beamCount >= 1 && (
+                      <>
+                        <line
+                          x1={x}
+                          y1={TAB_STEM_BOTTOM - 1.5}
+                          x2={x + 8.5}
+                          y2={TAB_STEM_BOTTOM - 5.5}
+                          stroke={tabDigitFill}
+                          strokeWidth="2.5"
+                          strokeLinecap="round"
+                        />
+                        {rhythm.beamCount >= 2 && (
+                          <line
+                            x1={x}
+                            y1={TAB_STEM_BOTTOM - 7}
+                            x2={x + 8.5}
+                            y2={TAB_STEM_BOTTOM - 11}
+                            stroke={tabDigitFill}
+                            strokeWidth="2.3"
+                            strokeLinecap="round"
+                          />
+                        )}
+                      </>
+                    )}
+                    {/* Augmentation dot on TAB rhythm stem */}
+                    {rhythm.dotted && (
+                      <circle
+                        cx={x + 5.5}
+                        cy={TAB_STEM_BOTTOM - (rhythm.beamCount >= 1 ? 13 : 6)}
+                        r="2.0"
+                        fill={tabDigitFill}
+                      />
+                    )}
+                  </g>
+                )}
               </g>
             );
           })}
 
-          {/* ── FORENSIC 3 DELICATE 1PX HAIRLINE PIN CALLOUTS (Screen 03 — Zero Bulky Colored Banners!) ── */}
+          {/* ── FORENSIC 3 DELICATE 1PX HAIRLINE PIN CALLOUTS (Screen 03) ── */}
           {forensicData &&
             forensicData.pins.map((pin) => {
               const boxW = pin.label.length * 6.9 + 20;
-              const boxY = 54;
-              const boxX = Math.max(MARGIN_LEFT + 6, Math.min(SVG_W - MARGIN_RIGHT - boxW - 6, pin.x - boxW / 2));
+              const boxY = 52;
+              const boxX = Math.max(
+                MARGIN_LEFT + 6,
+                Math.min(SVG_W - MARGIN_RIGHT - boxW - 6, pin.x - boxW / 2),
+              );
               return (
                 <g key={pin.label}>
                   <line
@@ -859,27 +1382,19 @@ export function RisoEngravedScore({
               );
             })}
 
-          {/* ── SINGLE #FF3B7F 1.5PX VERTICAL PLAYHEAD SPANNING BOTH STAFF & TAB ── */}
+          {/* ── SINGLE #FF3B7F 1.75PX VERTICAL PLAYHEAD SPANNING BOTH STAFF & TAB ── */}
           {!forensicMode && (
             <g ref={playheadGroupRef} style={{ willChange: 'transform' }}>
               <line
                 x1="0"
-                y1={56}
+                y1={54}
                 x2="0"
-                y2={TAB_BOTTOM + 14}
+                y2={TAB_STEM_BOTTOM + 6}
                 stroke="#FF3B7F"
                 strokeWidth="1.75"
               />
-              <polygon
-                points="-5,54 5,54 0,62"
-                fill="#FF3B7F"
-              />
-              <circle
-                cx="0"
-                cy={TAB_BOTTOM + 14}
-                r="3.5"
-                fill="#FF3B7F"
-              />
+              <polygon points="-5,52 5,52 0,60" fill="#FF3B7F" />
+              <circle cx="0" cy={TAB_STEM_BOTTOM + 6} r="3.5" fill="#FF3B7F" />
             </g>
           )}
         </svg>

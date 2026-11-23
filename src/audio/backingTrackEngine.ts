@@ -44,7 +44,7 @@ class SoundGeneratorEngine {
       return null;
     }
     if (!this.ctx || this.ctx.state === 'closed') {
-      const ctx = new AudioContext();
+      const ctx = new AudioContext({ latencyHint: 0 });
       const comp = ctx.createDynamicsCompressor();
       comp.threshold.value = -14;
       comp.knee.value = 18;
@@ -84,6 +84,16 @@ class SoundGeneratorEngine {
   getContext(): AudioContext | null {
     if (asioBridgeClient.isAsioActive()) return null;
     return this.ensureContext();
+  }
+
+  closeWebAudioContext(): void {
+    if (this.ctx && this.ctx.state !== 'closed') {
+      void this.ctx.close().catch(() => {});
+    }
+    this.ctx = null;
+    this.compressor = null;
+    this.masterGain = null;
+    this.noiseBuffer = null;
   }
 
   getClockSec(): number {
