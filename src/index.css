@@ -4,8 +4,11 @@
 
 :root {
   --zine-paper: #FFFBF0;
+  --zine-deck: #F4ECDC;
   --zine-cream: #FFF4D8;
   --zine-ink: #121212;
+  --neck-wood: #231E1B;
+  --neck-bone: #F5E6CC;
   --neo-lime: #D8FF2E;
   --neo-cobalt: #2B59FF;
   --neo-magenta: #FF3B7F;
@@ -27,18 +30,17 @@ body {
 }
 
 ::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
+  width: 8px;
+  height: 8px;
 }
 
 ::-webkit-scrollbar-track {
-  background: #FFF4D8;
+  background: #F4ECDC;
   border-left: 2px solid #121212;
 }
 
 ::-webkit-scrollbar-thumb {
   background: #121212;
-  border: 2px solid #FFF4D8;
   border-radius: 999px;
 }
 
@@ -46,95 +48,103 @@ body {
   background: #2B59FF;
 }
 
-/* Risograph halftone & zine paper textures */
-.riso-dots {
-  background-image: radial-gradient(rgba(18, 18, 18, 0.13) 1.25px, transparent 1.25px);
-  background-size: 16px 16px;
-}
-
-.riso-dots-subtle {
-  background-image: radial-gradient(rgba(18, 18, 18, 0.08) 1.2px, transparent 1.2px);
+/* Warm Risograph paper textures (ultra-clean, zero clutter) */
+.riso-paper-grain {
+  background-color: #FFFBF0;
+  background-image: radial-gradient(rgba(18, 18, 18, 0.065) 1px, transparent 1px);
   background-size: 18px 18px;
 }
 
-.riso-stripes {
+.riso-halftone-cobalt {
+  background-image: radial-gradient(rgba(43, 89, 255, 0.14) 1.25px, transparent 1.25px);
+  background-size: 12px 12px;
+}
+
+.riso-halftone-amber {
+  background-image: radial-gradient(rgba(255, 138, 0, 0.16) 1.25px, transparent 1.25px);
+  background-size: 12px 12px;
+}
+
+.riso-hatch-coral {
   background-image: repeating-linear-gradient(
     -45deg,
-    rgba(18, 18, 18, 0.08),
-    rgba(18, 18, 18, 0.08) 6px,
-    transparent 6px,
-    transparent 12px
+    rgba(255, 59, 127, 0.22),
+    rgba(255, 59, 127, 0.22) 4px,
+    transparent 4px,
+    transparent 8px
   );
 }
 
-.riso-grid {
-  background-image:
-    linear-gradient(to right, rgba(18, 18, 18, 0.055) 1px, transparent 1px),
-    linear-gradient(to bottom, rgba(18, 18, 18, 0.055) 1px, transparent 1px);
-  background-size: 28px 28px;
-}
-
-/* Playful Duolingo x Arcade animations */
-@keyframes neo-frontier-bob {
-  0%, 100% {
-    transform: translateY(0px) rotate(-2deg);
+/* 1/4" Patch-cable flowing electric signal */
+@keyframes riso-cable-flow {
+  0% {
+    stroke-dashoffset: 36;
   }
-  50% {
-    transform: translateY(-5px) rotate(1.5deg);
+  100% {
+    stroke-dashoffset: 0;
   }
 }
 
-.neo-bob {
-  animation: neo-frontier-bob 2.2s ease-in-out infinite;
+.riso-cable-signal {
+  animation: riso-cable-flow 1.4s linear infinite;
 }
 
-@keyframes neo-pulse-ring {
-  0%, 100% {
+@keyframes riso-frontier-pulse {
+  0%,
+  100% {
     box-shadow: 0 0 0 0 rgba(216, 255, 46, 0.85), 4px 4px 0px #121212;
   }
   50% {
-    box-shadow: 0 0 0 7px rgba(216, 255, 46, 0.25), 4px 4px 0px #121212;
+    box-shadow: 0 0 0 9px rgba(216, 255, 46, 0.18), 4px 4px 0px #121212;
   }
 }
 
-.neo-frontier-glow {
-  animation: neo-pulse-ring 2s ease-in-out infinite;
+.riso-frontier-glow {
+  animation: riso-frontier-pulse 2.2s ease-in-out infinite;
 }
 
-@keyframes neo-beam-shimmer {
-  0%, 100% {
-    opacity: 0.92;
+@keyframes riso-bleed-vibe {
+  0%,
+  100% {
+    transform: translateY(0px);
   }
-  50% {
-    opacity: 1;
+  25% {
+    transform: translateY(-0.8px);
+  }
+  75% {
+    transform: translateY(0.8px);
   }
 }
 
-.neo-beam {
-  animation: neo-beam-shimmer 1.6s ease-in-out infinite;
+.riso-bleed-wire {
+  animation: riso-bleed-vibe 0.16s linear infinite;
+}
+
+/* Perforated concert ticket stub */
+.riso-ticket {
+  position: relative;
+  background-color: #FFFFFF;
+  border: 2.5px solid #121212;
+  border-radius: 18px;
+  box-shadow: 5px 5px 0px #121212;
 }
 
 @layer components {
-  /* Core Neo-Brutalist Surfaces */
   .neo-card {
-    @apply bg-white border-[2.5px] border-[#121212] rounded-2xl shadow-brutal;
+    @apply bg-white border-[2.5px] border-[#121212] rounded-2xl shadow-brutal-sm;
   }
 
-  .neo-card-cream {
-    @apply bg-[#FFF4D8] border-[2.5px] border-[#121212] rounded-2xl shadow-brutal;
-  }
-
-  .neo-card-lg {
-    @apply bg-white border-[2.5px] border-[#121212] rounded-3xl shadow-brutal-lg;
+  .neo-card-deck {
+    @apply bg-[#F4ECDC] border-[2.5px] border-[#121212] rounded-2xl shadow-brutal-sm;
   }
 
   .neo-stamp {
-    @apply inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full border-2 border-[#121212] font-mono text-[11px] font-bold uppercase tracking-wider shadow-brutal-xs;
+    @apply inline-flex items-center gap-1 px-2 py-0.5 rounded-full border-2 border-[#121212] font-mono text-[10px] font-bold uppercase tracking-wider shadow-brutal-xs;
   }
 
-  /* Tactile Chunk-3D Pressable Buttons (Duolingo x Neo-Brutalism) */
+  /* Tactile 3D Pressable Buttons */
   .neo-btn-3d {
-    @apply inline-flex items-center justify-center gap-2 border-[2.5px] border-[#121212] border-b-[5px] rounded-2xl font-display font-extrabold tracking-tight transition-all duration-100 select-none;
+    @apply inline-flex items-center justify-center gap-1.5 border-[2.5px] border-[#121212] border-b-[5px] rounded-xl font-display font-extrabold tracking-tight transition-all duration-100 select-none;
   }
 
   .neo-btn-3d:not(:disabled):hover {
@@ -143,6 +153,18 @@ body {
 
   .neo-btn-3d:not(:disabled):active {
     @apply translate-y-[3px] border-b-[2.5px];
+  }
+
+  .neo-medallion-3d {
+    @apply inline-flex flex-col items-center justify-center border-[3px] border-[#121212] border-b-[6px] rounded-[24px] transition-all duration-150 select-none;
+  }
+
+  .neo-medallion-3d:not(:disabled):hover {
+    @apply -translate-y-[2px];
+  }
+
+  .neo-medallion-3d:not(:disabled):active {
+    @apply translate-y-[3px] border-b-[3px];
   }
 
   .neo-btn-lime {
@@ -161,45 +183,41 @@ body {
     @apply neo-btn-3d bg-[#FF8A00] text-[#121212];
   }
 
+  .neo-btn-mint {
+    @apply neo-btn-3d bg-[#1CE088] text-[#121212];
+  }
+
   .neo-btn-paper {
     @apply neo-btn-3d bg-white text-[#121212];
+  }
+
+  .neo-btn-deck {
+    @apply neo-btn-3d bg-[#F4ECDC] text-[#121212];
   }
 
   .neo-btn-ink {
     @apply neo-btn-3d bg-[#121212] text-[#D8FF2E];
   }
 
-  /* Legacy sp-* compatibility classes styled in Neo-Groove Arcade palette */
+  /* Legacy sp-* compatibility for Setup / HistoryView / BottomBar */
   .sp-topbar {
-    @apply h-16 flex items-center justify-between px-6 bg-[#FFFBF0] border-b-[2.5px] border-[#121212] shrink-0 z-20;
-  }
-
-  .sp-sidebar {
-    @apply w-64 xl:w-[272px] shrink-0 flex flex-col bg-[#FFF4D8] border-r-[2.5px] border-[#121212] overflow-hidden;
+    @apply h-14 flex items-center justify-between px-5 bg-[#FFFBF0] border-b-[2.5px] border-[#121212] shrink-0 z-20;
   }
 
   .sp-bottombar {
-    @apply h-20 shrink-0 bg-[#FFFBF0] border-t-[2.5px] border-[#121212] z-20;
-  }
-
-  .sp-main-content {
-    @apply flex-1 overflow-y-auto p-4 bg-[#FFFBF0];
-  }
-
-  .sp-main-gradient {
-    @apply min-h-full rounded-2xl bg-[#FFFBF0];
+    @apply h-16 shrink-0 bg-[#FFFBF0] border-t-[2.5px] border-[#121212] z-20;
   }
 
   .sp-card {
-    @apply rounded-2xl bg-white border-[2.5px] border-[#121212] shadow-brutal;
+    @apply rounded-2xl bg-white border-[2.5px] border-[#121212] shadow-brutal-sm;
   }
 
   .sp-card-padded {
-    @apply rounded-2xl bg-white border-[2.5px] border-[#121212] shadow-brutal p-5;
+    @apply rounded-2xl bg-white border-[2.5px] border-[#121212] shadow-brutal-sm p-5;
   }
 
   .sp-card-interactive {
-    @apply bg-white hover:bg-[#FFF4D8] border-[2.5px] border-[#121212] shadow-brutal rounded-2xl text-left transition-all duration-150;
+    @apply bg-white hover:bg-[#F4ECDC] border-[2.5px] border-[#121212] shadow-brutal-sm rounded-2xl text-left transition-all duration-150;
   }
 
   .sp-btn-primary {
@@ -210,33 +228,12 @@ body {
     @apply neo-btn-lime px-4 py-2 text-sm shrink-0;
   }
 
-  @keyframes sp-setup-cta-breathe {
-    0%, 100% { transform: scale(1); }
-    50% { transform: scale(1.05); }
-  }
-
-  .sp-setup-cta-attention {
-    animation: sp-setup-cta-breathe 1.5s ease-in-out infinite;
-  }
-
   .sp-btn-secondary {
     @apply neo-btn-paper py-2 px-4 text-sm;
   }
 
   .sp-btn-ghost {
     @apply flex items-center gap-1.5 text-sm font-bold text-[#423E37] hover:text-[#121212] transition-colors;
-  }
-
-  .sp-sidebar-item {
-    @apply w-full text-left px-3 py-2 rounded-xl transition-all flex items-center gap-2.5 border-2 border-transparent;
-  }
-
-  .sp-sidebar-item-active {
-    @apply bg-[#D8FF2E] border-[#121212] shadow-brutal-xs;
-  }
-
-  .sp-sidebar-item-idle {
-    @apply hover:bg-white hover:border-[#121212];
   }
 
   .sp-section-label {
@@ -252,7 +249,7 @@ body {
   }
 
   .sp-pill-match {
-    @apply px-4 py-1.5 rounded-full text-sm font-bold border-2 border-[#121212] bg-[#D8FF2E] text-[#121212];
+    @apply px-4 py-1.5 rounded-full text-sm font-bold border-2 border-[#121212] bg-[#1CE088] text-[#121212];
   }
 
   .sp-pill-miss {
@@ -260,7 +257,7 @@ body {
   }
 
   .sp-pill-neutral {
-    @apply px-4 py-1.5 rounded-full text-sm font-bold border-2 border-[#121212] bg-[#FFF4D8] text-[#121212];
+    @apply px-4 py-1.5 rounded-full text-sm font-bold border-2 border-[#121212] bg-[#F4ECDC] text-[#121212];
   }
 
   .sp-mic-dot {
@@ -276,10 +273,24 @@ body {
   }
 
   .sp-loudness-track {
-    @apply w-16 h-2 rounded-full bg-[#FFF4D8] border border-[#121212] overflow-hidden;
+    @apply w-16 h-2 rounded-full bg-[#F4ECDC] border border-[#121212] overflow-hidden;
   }
 
   .sp-loudness-fill {
     @apply h-full rounded-full bg-[#1CE088] transition-all duration-100;
+  }
+
+  @keyframes sp-setup-cta-breathe {
+    0%,
+    100% {
+      transform: scale(1);
+    }
+    50% {
+      transform: scale(1.05);
+    }
+  }
+
+  .sp-setup-cta-attention {
+    animation: sp-setup-cta-breathe 1.5s ease-in-out infinite;
   }
 }

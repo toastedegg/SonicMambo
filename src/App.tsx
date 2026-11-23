@@ -4,8 +4,7 @@ import { CourseRoadmapView } from './components/CourseRoadmapView';
 import { CourseStageView, type AttemptOutcome } from './components/CourseStageView';
 import { HistoryView } from './components/HistoryView';
 import { Setup } from './components/Setup';
-import { Sidebar, type NavViewKind } from './components/Sidebar';
-import { TopBar } from './components/TopBar';
+import { TopBar, type NavViewKind } from './components/TopBar';
 import { AudioEngineProvider } from './context/AudioEngineContext';
 import {
   GUITAR_COURSES,
@@ -92,7 +91,7 @@ function parseInitialUrlConfig(): UrlDemoConfig {
       demoMode,
       initialView: {
         kind: 'stage',
-        course: resolveCourse(0), // Course 1: Smokestack E Minor Blues (multi-string colorful highway)
+        course: resolveCourse(2), // Course #03: Sunburst Soul Lead: Verse
         initialMode: 'play',
         initialDetailOpen: false,
       },
@@ -104,7 +103,7 @@ function parseInitialUrlConfig(): UrlDemoConfig {
       demoMode,
       initialView: {
         kind: 'stage',
-        course: resolveCourse(2), // Course 3: Sunburst Soul Lead: Verse (frontier stage cleared -> unlocks Ch II!)
+        course: resolveCourse(2), // Course #03: Post-take Forensic Ribbon + 3-Pedal Stompbox Rack
         initialMode: 'play',
         initialDetailOpen: true,
       },
@@ -158,17 +157,21 @@ function AppShell() {
     isDemoMode ? buildDemoProgress() : readCourseProgress(),
   );
   const [setupCtaPulseActive, setSetupCtaPulseActive] = useState(false);
+  const [stageRunning, setStageRunning] = useState(false);
 
   const handleOpenRoadmap = useCallback(() => {
+    setStageRunning(false);
     setView({ kind: 'roadmap' });
   }, []);
 
   const handleNavigate = useCallback((nav: NavViewKind) => {
+    setStageRunning(false);
     setView({ kind: nav });
   }, []);
 
   const handleSelectCourse = useCallback(
     (course: GuitarCourse, initialMode: CoursePracticeMode = 'play') => {
+      setStageRunning(false);
       setView({ kind: 'stage', course, initialMode, initialDetailOpen: false });
     },
     [],
@@ -229,59 +232,51 @@ function AppShell() {
       : false;
 
   const stageTitle = isStageView
-    ? `STAGE #${String(view.course.order).padStart(2, '0')} · ${view.course.title}`
+    ? `${view.course.styleLabel.toUpperCase()} · ${view.course.keySignature.toUpperCase()}`
     : null;
 
   return (
     <div className="h-screen flex flex-col overflow-hidden bg-[#FFFBF0] text-[#121212] font-display">
       <TopBar
+        activeNav={activeNav}
         stageTitle={stageTitle}
+        onNavigate={handleNavigate}
         onBack={view.kind !== 'roadmap' ? handleOpenRoadmap : null}
-        onOpenSetup={view.kind !== 'setup' ? () => handleNavigate('setup') : undefined}
         demoMode={isDemoMode}
+        dimmed={isStageView && stageRunning}
       />
 
-      <div className="flex-1 flex min-h-0">
-        {!isStageView && (
-          <Sidebar
-            activeNav={activeNav}
-            activeCourseId={null}
+      <main className="flex-1 min-h-0 overflow-y-auto bg-[#FFFBF0]">
+        {isStageView ? (
+          <CourseStageView
+            key={`${view.course.id}-${view.initialDetailOpen ? 'detail' : 'stage'}`}
+            course={view.course}
+            initialMode={view.initialMode}
+            initialDetailOpen={Boolean(view.initialDetailOpen)}
+            demoMode={isDemoMode}
+            mastery={progress.courses[view.course.id]}
+            nextCourse={nextCourseForStage}
+            isNextUnlocked={isNextUnlockedForStage}
+            onRecordAttempt={handleRecordAttempt}
+            onSelectCourse={handleSelectCourse}
+            onBackToRoadmap={handleOpenRoadmap}
+            onRunningChange={setStageRunning}
+          />
+        ) : view.kind === 'setup' ? (
+          <Setup onReachedScrollEnd={() => setSetupCtaPulseActive(true)} />
+        ) : view.kind === 'history' ? (
+          <HistoryView />
+        ) : (
+          <CourseRoadmapView
             progress={progress}
-            onNavigate={handleNavigate}
-            onSelectCourse={(course) => handleSelectCourse(course, 'play')}
+            onSelectCourse={handleSelectCourse}
+            onToggleUnlockAll={handleToggleUnlockAll}
+            onOpenSetup={() => handleNavigate('setup')}
+            showSetupBanner={!onboarded}
+            demoMode={isDemoMode}
           />
         )}
-
-        <main className="flex-1 overflow-y-auto bg-[#FFFBF0]">
-          {isStageView ? (
-            <CourseStageView
-              key={`${view.course.id}-${view.initialDetailOpen ? 'detail' : 'stage'}`}
-              course={view.course}
-              initialMode={view.initialMode}
-              initialDetailOpen={Boolean(view.initialDetailOpen)}
-              demoMode={isDemoMode}
-              mastery={progress.courses[view.course.id]}
-              nextCourse={nextCourseForStage}
-              isNextUnlocked={isNextUnlockedForStage}
-              onRecordAttempt={handleRecordAttempt}
-              onSelectCourse={handleSelectCourse}
-              onBackToRoadmap={handleOpenRoadmap}
-            />
-          ) : view.kind === 'setup' ? (
-            <Setup onReachedScrollEnd={() => setSetupCtaPulseActive(true)} />
-          ) : view.kind === 'history' ? (
-            <HistoryView />
-          ) : (
-            <CourseRoadmapView
-              progress={progress}
-              onSelectCourse={handleSelectCourse}
-              onToggleUnlockAll={handleToggleUnlockAll}
-              onOpenSetup={() => handleNavigate('setup')}
-              showSetupBanner={!onboarded}
-            />
-          )}
-        </main>
-      </div>
+      </main>
 
       {view.kind === 'setup' && (
         <BottomBar
