@@ -1,3 +1,5 @@
+import { useSharedAudioEngine } from '../context/AudioEngineContext';
+
 export interface AudioFeedback {
   detectedLabel: string | null;
   frequency: number | null;
@@ -11,38 +13,67 @@ export interface AudioFeedback {
 
 interface BottomBarProps {
   audio: AudioFeedback | null;
-  /** Setup flow: compact primary action, left-aligned in the footer. */
+  /** Setup flow: compact primary action, right-aligned in the footer. */
   onSetupReady?: () => void;
   /** After user scrolls setup to the end, loop a subtle scale pulse until they leave setup or click. */
   setupCtaPulseActive?: boolean;
 }
 
 export function BottomBar({ audio, onSetupReady, setupCtaPulseActive = false }: BottomBarProps) {
+  const shared = useSharedAudioEngine();
+
   if (onSetupReady) {
     return (
-      <footer className="sp-bottombar flex items-center justify-end px-6">
+      <footer className="sp-bottombar flex items-center justify-between px-6">
+        <div className="flex items-center gap-3 text-xs text-sp-text-sub">
+          {shared.isListening && (
+            <>
+              <span className="font-bold text-white">
+                {shared.currentNote?.label ?? 'Listening...'}
+              </span>
+              {shared.frequency != null && (
+                <span className="text-sp-text-muted">{shared.frequency.toFixed(1)} Hz</span>
+              )}
+            </>
+          )}
+        </div>
         <button
           type="button"
           onClick={onSetupReady}
           className={`sp-btn-primary-compact ${setupCtaPulseActive ? 'sp-setup-cta-attention' : ''}`}
         >
-          I&rsquo;m ready &rarr; Pick a lesson
+          Done &rarr; Open Course Roadmap
         </button>
       </footer>
     );
   }
 
-  if (!audio) {
+  const effectiveAudio: AudioFeedback | null =
+    audio ??
+    (shared.isListening
+      ? {
+          detectedLabel: shared.currentNote?.label ?? null,
+          frequency: shared.frequency,
+          loudness: shared.loudness,
+          isListening: shared.isListening,
+          targetLabel: null,
+          isMatch: null,
+          hits: 0,
+          misses: 0,
+        }
+      : null);
+
+  if (!effectiveAudio) {
     return (
       <footer className="sp-bottombar flex items-center justify-center">
         <p className="text-sp-text-muted text-sm font-semibold">
-          Select a lesson to begin
+          Pick an unlocked stage on the Course Roadmap or enable your mic to start playing
         </p>
       </footer>
     );
   }
 
-  const { detectedLabel, frequency, loudness, targetLabel, isMatch, hits, misses } = audio;
+  const { detectedLabel, frequency, loudness, targetLabel, isMatch, hits, misses } = effectiveAudio;
 
   const pillClass =
     isMatch === true
@@ -70,17 +101,21 @@ export function BottomBar({ audio, onSetupReady, setupCtaPulseActive = false }: 
         {targetLabel ? (
           <div className={pillClass}>Target: {targetLabel}</div>
         ) : (
-          <span className="text-sm text-sp-text-muted">Waiting...</span>
+          <span className="text-sm text-sp-text-muted">Live detection active</span>
         )}
       </div>
 
       <div className="flex items-center justify-end gap-5 text-xs font-semibold">
-        <span className="text-sp-text-sub">
-          Hits <span className="text-brand-green">{hits}</span>
-        </span>
-        <span className="text-sp-text-sub">
-          Miss <span className="text-brand-red">{misses}</span>
-        </span>
+        {audio && (
+          <>
+            <span className="text-sp-text-sub">
+              Hits <span className="text-brand-green">{hits}</span>
+            </span>
+            <span className="text-sp-text-sub">
+              Miss <span className="text-brand-red">{misses}</span>
+            </span>
+          </>
+        )}
         <div className="flex items-center gap-1.5">
           <div className="sp-loudness-track">
             <div

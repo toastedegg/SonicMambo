@@ -64,6 +64,61 @@ export function frequencyToNoteString(freq: number): string | null {
 }
 
 /**
+ * Convert MIDI note number (integer or continuous) to frequency in Hz (69 -> 440 Hz).
+ */
+export function midiToFrequency(midi: number, a4Hz: number = A4_FREQ): number {
+  if (!Number.isFinite(midi)) return NaN;
+  return a4Hz * Math.pow(2, (midi - 69) / 12);
+}
+
+/**
+ * Convert integer MIDI note number (e.g. 69) to label (e.g. "A4").
+ */
+export function midiToNoteLabel(midi: number): string | null {
+  if (!Number.isFinite(midi)) return null;
+  const rounded = Math.round(midi);
+  if (rounded < 0 || rounded > 127) return null;
+  const noteIndex = ((rounded % 12) + 12) % 12;
+  const octave = Math.floor(rounded / 12) - 1;
+  return `${NOTE_NAMES[noteIndex]}${octave}`;
+}
+
+/**
+ * Convert note label (e.g. "G4", "F#4", "E2") to target frequency in Hz.
+ */
+export function noteLabelToFrequency(noteLabel: string, a4Hz: number = A4_FREQ): number | null {
+  const midi = noteLabelToMidi(noteLabel);
+  if (midi == null) return null;
+  return midiToFrequency(midi, a4Hz);
+}
+
+/**
+ * Signed cents from `targetHz` to `detectedHz`: `1200 * log2(detectedHz / targetHz)`.
+ * Negative = flat, positive = sharp, 0 = exact match.
+ */
+export function centsBetween(detectedHz: number, targetHz: number): number {
+  if (
+    detectedHz <= 0 ||
+    targetHz <= 0 ||
+    !Number.isFinite(detectedHz) ||
+    !Number.isFinite(targetHz)
+  ) {
+    return NaN;
+  }
+  return 1200 * Math.log2(detectedHz / targetHz);
+}
+
+/**
+ * Signed cents deviation from the nearest equal-tempered semitone (-50..+50).
+ */
+export function centsFromNearestMidi(freq: number): { midi: number; cents: number } | null {
+  const continuous = frequencyToMidi(freq);
+  if (Number.isNaN(continuous) || continuous < 0 || continuous > 127) return null;
+  const midi = Math.round(continuous);
+  return { midi, cents: (continuous - midi) * 100 };
+}
+
+/**
  * Guitar-friendly target notes (common open and fretted notes).
  */
 export const GUITAR_TARGET_NOTES = [
